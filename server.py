@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Souvenir: a private viewer for daily GPSLogger traces.
 
-Everything is served from this machine: the traces, the map tiles
-(tiles/*.pmtiles), the fonts, the icons and the JS libraries.
+Everything is served from this machine: the traces, the photos, the map
+tiles (tiles/*.pmtiles), the fonts, the icons and the JS libraries.
 The Content-Security-Policy forbids the browser from contacting any
 other origin, so no trace (nor the viewed area) ever leaves the machine.
 
-Usage: python3 server.py [--data DIR] [--host 127.0.0.1] [--port 8000]
+Usage: python3 server.py [--data DIR] [--gps DIR] [--photos DIR] [--host 127.0.0.1] [--port 8000]
 """
 
 import argparse
@@ -22,12 +22,21 @@ import zipfile
 from datetime import datetime
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
+
+import photos
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-DAY_RE = re.compile(r"^(\d{8})\.(zip|csv|gpx)$")
+# Daily trace files. GPSLogger's old versions (2016-2017) put a space before the
+# extension ("20160204 .gpx") and wrote a .txt CSV without the provider column.
+DAY_RE = re.compile(r"^(\d{8}) ?\.(zip|csv|gpx|txt)$")
+# When a day has several files: zip, then csv, then gpx (has the provider), then txt.
+DAY_PRIO = {"zip": 0, "csv": 1, "gpx": 2, "txt": 3}
 TILES_DIR = os.path.join(ROOT, "tiles")
 TILES_RE = re.compile(r"^/tiles/([A-Za-z0-9_-]+)\.pmtiles$")
+PHOTO_RE = re.compile(r"^/(photos|thumbs)/(.+)$")
+THUMBS_DIR = os.path.join(ROOT, "cache", "thumbs")
+PHOTO_INDEX = os.path.join(ROOT, "cache", "photos.json")
 
 CSP = (
     "default-src 'self'; "
@@ -46,17 +55,55 @@ mimetypes.add_type("application/x-protobuf", ".pbf")
 mimetypes.add_type("application/octet-stream", ".pmtiles")
 
 
-def list_days(data_dir):
+_days = {}  # gps_dir -> (folder mtime, {day: path})
+
+
+def list_days(gps_dir):
+    """{day: path} of the daily trace files in gps_dir (see DAY_RE / DAY_PRIO).
+    Empty files (e.g. an interrupted copy) are ignored. Re-read only when the
+    folder changes (a file added, removed or renamed)."""
+    try:
+        mtime = os.stat(gps_dir).st_mtime
+    except OSError:
+        return {}
+    hit = _days.get(gps_dir)
+    if hit and hit[0] == mtime:
+        return hit[1]
     days = {}
-    for name in os.listdir(data_dir):
-        m = DAY_RE.match(name)
-        if m:
-            # Prefer zip, then csv, then gpx if several exist for one day.
-            prio = {"zip": 0, "csv": 1, "gpx": 2}[m.group(2)]
+    with os.scandir(gps_dir) as it:
+        for entry in it:
+            m = DAY_RE.match(entry.name)
+            if not m or not entry.is_file() or entry.stat().st_size == 0:
+                continue
+            prio = DAY_PRIO[m.group(2)]
             cur = days.get(m.group(1))
             if cur is None or prio < cur[0]:
-                days[m.group(1)] = (prio, name)
-    return {d: os.path.join(data_dir, v[1]) for d, v in sorted(days.items())}
+                days[m.group(1)] = (prio, entry.name)
+    result = {d: os.path.join(gps_dir, v[1]) for d, v in sorted(days.items())}
+    _days[gps_dir] = (mtime, result)
+    return result
+
+
+_tracks = {}  # path -> (mtime, points)
+
+
+def get_track(gps_dir, day):
+    """(signature, points) of a day's trace, parsed once per file version;
+    (None, []) if there is no trace for that day."""
+    path = list_days(gps_dir).get(day)
+    if not path:
+        return None, []
+    mtime = os.path.getmtime(path)
+    hit = _tracks.get(path)
+    if not hit or hit[0] != mtime:
+        try:
+            points = sorted(load_track(path))
+        except (zipfile.BadZipFile, ET.ParseError, UnicodeDecodeError, OSError) as e:
+            print(f"warning: cannot read {path}: {e}", file=sys.stderr)
+            points = []
+        hit = (mtime, points)
+        _tracks[path] = hit
+    return hit
 
 
 def list_maps():
@@ -108,7 +155,7 @@ def parse_gpx(data):
 
 
 def load_track(path):
-    if path.endswith(".csv"):
+    if path.endswith((".csv", ".txt")):
         with open(path, encoding="utf-8") as f:
             return parse_csv(f.read())
     if path.endswith(".gpx"):
@@ -116,23 +163,27 @@ def load_track(path):
             return parse_gpx(f.read())
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
-        csvs = [n for n in names if n.lower().endswith(".csv")]
-        if csvs:
-            return parse_csv(z.read(csvs[0]).decode("utf-8"))
-        gpxs = [n for n in names if n.lower().endswith(".gpx")]
-        if gpxs:
-            return parse_gpx(z.read(gpxs[0]))
+        for ext in (".csv", ".gpx", ".txt"):  # same preference as between loose files
+            found = [n for n in names if n.lower().endswith(ext)]
+            if found:
+                data = z.read(found[0])
+                return parse_gpx(data) if ext == ".gpx" else parse_csv(data.decode("utf-8"))
     return []
 
 
 class Handler(SimpleHTTPRequestHandler):
-    data_dir = None
-    cache = {}  # path -> (mtime, points)
+    gps_dir = None
+    photo_dir = None
+    photo_index = None  # photos.PhotoIndex
 
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=os.path.join(ROOT, "static"), **kw)
 
     def end_headers(self):
+        if getattr(self, "revalidate", False):
+            # Page files: always check for a newer version (cheap 304 otherwise),
+            # so an edited app.js / style.css is never served stale from cache.
+            self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Security-Policy", CSP)
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -155,29 +206,56 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/api/days":
-            return self.send_json(sorted(list_days(self.data_dir)))
+            # Days with a trace or photos (or both).
+            return self.send_json(sorted(set(list_days(self.gps_dir)) | set(self.photo_index.days())))
         if url.path == "/api/track":
             day = parse_qs(url.query).get("day", [""])[0]
-            path = list_days(self.data_dir).get(day)
-            if not path:
+            sig, points = get_track(self.gps_dir, day)
+            if sig is None:
                 return self.send_error(HTTPStatus.NOT_FOUND, "Unknown day")
-            mtime = os.path.getmtime(path)
-            hit = self.cache.get(path)
-            if not hit or hit[0] != mtime:
-                hit = (mtime, sorted(load_track(path)))
-                self.cache[path] = hit
-            return self.send_json({"day": day, "points": hit[1]})
+            return self.send_json({"day": day, "points": points})
         if url.path == "/api/maps":
             return self.send_json(list_maps())
+        if url.path == "/api/photos":
+            query = parse_qs(url.query)
+            days = [d for d in query.get("days", [""])[0].split(",") if d]
+            found = self.photo_index.photos_of(days)
+            if "bbox" not in query:
+                return self.send_json(found)
+            # "ici": only the photos inside west,south,east,north, plus the days' total.
+            try:
+                w, s, e, n = map(float, query["bbox"][0].split(","))
+            except ValueError:
+                return self.send_error(HTTPStatus.BAD_REQUEST, "bbox=west,south,east,north")
+            inside = [p for p in found if p["lat"] is not None
+                      and s <= p["lat"] <= n and w <= p["lon"] <= e]
+            return self.send_json({"total": len(found), "photos": inside})
+        m = PHOTO_RE.match(url.path)
+        if m:
+            return self.send_photo(unquote(m.group(2)), thumb=m.group(1) == "thumbs")
         m = TILES_RE.match(url.path)
         if m:
             return self.send_ranged(os.path.join(TILES_DIR, m.group(1) + ".pmtiles"))
+        self.revalidate = True
         return super().do_GET()
 
-    def send_ranged(self, path):
-        """Serve a file with HTTP Range support (needed by PMTiles)."""
+    def send_photo(self, name, thumb):
+        # Only names from the listing: no path tricks can reach other files.
+        if not self.photo_index.get(name):
+            return self.send_error(HTTPStatus.NOT_FOUND, "Unknown photo")
+        if thumb:
+            path = photos.thumbnail(self.photo_dir, name, THUMBS_DIR)
+            if path:
+                return self.send_ranged(path, "image/jpeg")
+            if os.path.splitext(name)[1].lower() in photos.VIDEO_EXT:
+                return self.send_error(HTTPStatus.NOT_FOUND, "No video preview (ffmpeg missing)")
+        path = os.path.join(self.photo_dir, name)
+        return self.send_ranged(path, mimetypes.guess_type(name)[0] or "application/octet-stream")
+
+    def send_ranged(self, path, content_type="application/octet-stream"):
+        """Serve a file with HTTP Range support (needed by PMTiles and videos)."""
         if not os.path.isfile(path):
-            return self.send_error(HTTPStatus.NOT_FOUND, "Map tiles not downloaded yet")
+            return self.send_error(HTTPStatus.NOT_FOUND, "File not found")
         size = os.path.getsize(path)
         start, end = 0, size - 1
         rng = self.headers.get("Range")
@@ -199,7 +277,7 @@ class Handler(SimpleHTTPRequestHandler):
         else:
             self.send_response(HTTPStatus.OK)
         length = end - start + 1
-        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Type", content_type)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(length))
         self.send_header("ETag", f'"{int(os.path.getmtime(path))}-{size}"')
@@ -210,27 +288,38 @@ class Handler(SimpleHTTPRequestHandler):
                 chunk = f.read(min(length, 1 << 16))
                 if not chunk:
                     break
-                self.wfile.write(chunk)
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    return  # the browser stopped a video download: normal
                 length -= len(chunk)
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--data", default=os.path.join(ROOT, "data"),
-                   help="directory with the daily YYYYMMDD.zip files")
+                   help="directory holding gps/ and photos/")
+    p.add_argument("--gps", default=None,
+                   help="directory with the daily YYYYMMDD.zip traces (default: DATA/gps)")
+    p.add_argument("--photos", default=None,
+                   help="directory with photos and videos (default: DATA/photos)")
     p.add_argument("--host", default="127.0.0.1",
                    help="address to listen on (default: localhost only)")
     p.add_argument("--port", type=int, default=8000)
     args = p.parse_args()
-    if not os.path.isdir(args.data):
-        sys.exit(f"Data directory not found: {args.data}")
-    Handler.data_dir = os.path.abspath(args.data)
+    Handler.gps_dir = os.path.abspath(args.gps or os.path.join(args.data, "gps"))
+    Handler.photo_dir = os.path.abspath(args.photos or os.path.join(args.data, "photos"))
+    if not os.path.isdir(Handler.gps_dir) and not os.path.isdir(Handler.photo_dir):
+        sys.exit(f"Neither {Handler.gps_dir} nor {Handler.photo_dir} exists")
     maps = list_maps()
     if not maps:
         print("warning: no tiles/*.pmtiles, the map background will be empty")
     else:
         print(f"Maps: {', '.join(maps)}")
-    print(f"Souvenir: {len(list_days(Handler.data_dir))} day(s) in {Handler.data_dir}")
+    print(f"Traces: {len(list_days(Handler.gps_dir))} day(s) in {Handler.gps_dir}")
+    Handler.photo_index = photos.PhotoIndex(
+        Handler.photo_dir, PHOTO_INDEX, lambda day: get_track(Handler.gps_dir, day))
+    print(f"Photos: {len(Handler.photo_index)} in {Handler.photo_dir}")
     print(f"Open http://{args.host}:{args.port}/")
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 

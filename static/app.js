@@ -3,7 +3,9 @@ import { Map, Popup, LngLatBounds, NavigationControl, ScaleControl, addProtocol 
 
 /* global pmtiles, basemaps */
 
-const COLORS = ['#e6194b', '#2563eb', '#16a34a', '#f59e0b', '#9333ea', '#0891b2', '#db2777', '#65a30d'];
+// One colour per weekday, Monday first: every Sunday has the same colour (red, as on calendars).
+const WEEKDAY_COLORS = ['#2563eb', '#16a34a', '#f59e0b', '#9333ea', '#0891b2', '#ff91a4', '#dc2626'];
+const WEEKDAY_LETTERS = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
 // Point fields as sent by /api/track.
 const T = 0, LAT = 1, LON = 2, ELE = 3, ACC = 4, SPEED = 5, PROV = 6, BAT = 7;
 
@@ -33,10 +35,19 @@ const STAY_PX = 1.8;       // dot radius in px = STAY_PX × √minutes (1 h ≈ 
 
 const $ = (id) => document.getElementById(id);
 const colorBy = () => document.querySelector('input[name=colorby]:checked').value;
+const showGps = () => $('show-gps').checked;
+const showPhotos = () => $('show-photos').checked;
+const showHere = () => showPhotos() && $('show-here').checked; // "Ici": only the photos inside the map view
+const MAX_DAY_LIST = 31; // beyond this many selected days, one summary instead of a list
 const state = {
-  days: [],               // available days, 'YYYYMMDD', sorted
+  days: [],               // days with a trace or photos, 'YYYYMMDD', sorted
   selected: [],           // selected days, in selection order
+  anchor: null,           // last clicked day: start of a ⇧+click range, reference for "Semaine"
   tracks: new globalThis.Map(), // day -> points
+  photos: new globalThis.Map(), // day -> [{name, kind, t, day, lat, lon, exact, w, h}]
+  photoKey: null,               // what the photo panel currently shows
+  here: { total: 0, photos: [] }, // "ici": the selected days' photos inside the view, from the server
+  highlighted: null,            // name of the photo outlined in the panel / enlarged on the map
   month: null,            // Date of the first day of the shown month
 };
 
@@ -85,12 +96,43 @@ map.addControl(new ScaleControl({ unit: 'metric' }), 'bottom-right');
 
 const mapReady = new Promise((resolve) => map.on('load', resolve));
 
+// From WORLD_MAXZOOM on, when the whole view is inside a detailed map's rectangle
+// (read from its pmtiles header: the extract's bbox, larger than the country),
+// the world layers are fully covered: hide them so the browser neither loads nor
+// draws their stretched tiles. Only saves work, the picture is the same.
+if (maps.includes('world') && maps.length > 1) {
+  const detail = await Promise.all(maps.filter((m) => m !== 'world').map(async (m) => {
+    const h = await new pmtiles.PMTiles(`${base}tiles/${m}.pmtiles`).getHeader();
+    return [h.minLon, h.minLat, h.maxLon, h.maxLat];
+  }));
+  const worldIds = layers.filter((l) => l.source === 'world').map((l) => l.id);
+  let worldHidden = false;
+  const updateWorld = () => {
+    const b = map.getBounds();
+    const covered = map.getZoom() >= WORLD_MAXZOOM && detail.some(([w, s, e, n]) =>
+      b.getWest() >= w && b.getSouth() >= s && b.getEast() <= e && b.getNorth() <= n);
+    if (covered === worldHidden) return;
+    worldHidden = covered;
+    for (const id of worldIds) map.setLayoutProperty(id, 'visibility', covered ? 'none' : 'visible');
+  };
+  mapReady.then(() => {
+    updateWorld();
+    map.on('move', updateWorld); // during the move, so nothing blank shows when leaving the rectangle
+  });
+}
+
 mapReady.then(() => {
   const empty = { type: 'FeatureCollection', features: [] };
   map.addSource('lines', { type: 'geojson', data: empty });
   map.addSource('points', { type: 'geojson', data: empty });
   map.addSource('ends', { type: 'geojson', data: empty });
   map.addSource('stays', { type: 'geojson', data: empty });
+  map.addSource('photos', { type: 'geojson', data: empty });
+  // One square per weekday colour, normal and enlarged (highlighted photo).
+  WEEKDAY_COLORS.forEach((c, i) => {
+    map.addImage(`photo-${i}`, square(14, c), { pixelRatio: 2 });
+    map.addImage(`photo-${i}-hl`, square(22, c), { pixelRatio: 2 });
+  });
 
   map.addLayer({
     id: 'lines-casing', type: 'line', source: 'lines',
@@ -134,19 +176,36 @@ mapReady.then(() => {
     },
   });
 
-  const popup = new Popup({ closeButton: false, closeOnClick: false, offset: 8 });
+  map.addLayer({
+    id: 'photos', type: 'symbol', source: 'photos',
+    layout: {
+      'icon-image': photoIcon(null),
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+      'symbol-sort-key': ['get', 't'],
+    },
+  });
+
+  // Photos first, then track points (small, unreachable under a big dot), then stays.
+  const pick = (point) => {
+    for (const id of ['photos', 'points']) {
+      const [f] = map.queryRenderedFeatures(point, { layers: [id] });
+      if (f) return f;
+    }
+    return map.queryRenderedFeatures(point, { layers: ['stays'] })
+      .sort((a, b) => a.properties.min - b.properties.min)[0];
+  };
+  const popup = new Popup({ closeButton: false, closeOnClick: false, offset: 10, maxWidth: '200px' });
   map.on('mousemove', (e) => {
-    // Track points take precedence: they are small and would be unreachable under a big dot.
-    const [f] = map.queryRenderedFeatures(e.point, { layers: ['points'] }).length
-      ? map.queryRenderedFeatures(e.point, { layers: ['points'] })
-      : map.queryRenderedFeatures(e.point, { layers: ['stays'] })
-        .sort((a, b) => a.properties.min - b.properties.min);
+    const f = pick(e.point);
     map.getCanvas().style.cursor = f ? 'pointer' : '';
     if (!f) return popup.remove();
-    const html = f.layer.id === 'points' ? pointInfo(f.properties) : stayInfo(f.properties);
+    const id = f.layer.id;
+    const html = id === 'photos' ? photoInfo(f.properties) : id === 'points' ? pointInfo(f.properties) : stayInfo(f.properties);
     popup.setLngLat(f.geometry.coordinates).setHTML(html).addTo(map);
   });
   map.on('mouseout', () => popup.remove());
+  map.on('click', 'photos', (e) => highlightPhoto(e.features[0].properties.name, { scroll: true }));
 });
 
 /* ---------- Helpers ---------- */
@@ -157,7 +216,11 @@ const keyDate = (k) => new Date(+k.slice(0, 4), +k.slice(4, 6) - 1, +k.slice(6, 
 const fmtDay = (k) => keyDate(k).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' });
 const fmtTime = (ms) => new Date(ms).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 const fmtQuarter = (q) => q >= 96 ? '24:00' : `${pad(Math.floor(q / 4))}:${pad((q % 4) * 15)}`;
-const colorOf = (day) => COLORS[state.selected.indexOf(day) % COLORS.length];
+const weekday = (day) => (keyDate(day).getDay() + 6) % 7; // 0 = Monday
+const colorOf = (day) => WEEKDAY_COLORS[weekday(day)];
+/** Map icon of a photo square: its day's colour, enlarged for the highlighted photo. */
+const photoIcon = (highlighted) => ['concat', 'photo-', ['to-string', ['get', 'wd']],
+  ['case', ['==', ['get', 'name'], highlighted ?? ''], '-hl', '']];
 
 function haversine(a, b) {
   const R = 6371e3, r = Math.PI / 180;
@@ -210,13 +273,44 @@ function findStays(pts) {
   return stays;
 }
 
+/** Square icon for the photo markers, drawn at 2× for sharp screens. */
+function square(size, color) {
+  const px = size * 2, c = document.createElement('canvas');
+  c.width = c.height = px;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, px, px);
+  ctx.fillStyle = color;
+  ctx.fillRect(4, 4, px - 8, px - 8);
+  return ctx.getImageData(0, 0, px, px);
+}
+
+// Names may contain "/" (subfolders): keep them as path separators.
+const photoUrl = (name, thumb) => `${thumb ? 'thumbs' : 'photos'}/${name.split('/').map(encodeURIComponent).join('/')}`;
+
+function photoInfo(p) {
+  return `<img class="pop-img" src="${photoUrl(p.name, true)}" alt=""><br>` +
+    `<b>${state.selected.length > 1 ? fmtShortDay(p.day) + ' ' : ''}${fmtTime(p.t)}</b>${p.kind === 'video' ? ' · vidéo' : ''}` +
+    (p.exact ? '' : '<br><span class="pop-note">position estimée d’après la trace</span>');
+}
+
+/**
+ * Where a photo was taken, as computed by the server (photos.locate): the
+ * camera's GPS (exact) or the day's trace at that time; null if neither.
+ */
+const locatePhoto = (p) => p.lat != null && p.lon != null ? { lat: p.lat, lon: p.lon, exact: p.exact } : null;
+
+const fmtDate = (ms) => new Date(ms).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+
 function stayInfo(p) {
-  return `<b>${fmtTime(p.start)} → ${fmtTime(p.end)}</b><br>` +
+  const start = fmtDate(p.start), end = fmtDate(p.end); // a stay can span midnight
+  return `${start === end ? start : `${start} → ${end}`}<br>` +
+    `<b>${fmtTime(p.start)} → ${fmtTime(p.end)}</b><br>` +
     `${fmtDuration(p.min)} sur place · ${p.n} points`;
 }
 
 function pointInfo(p) {
-  const rows = [`<b>${fmtTime(p.t)}</b> · ${p.prov || '?'}`];
+  const rows = [`${fmtDate(p.t)}<br><b>${fmtTime(p.t)}</b> · ${p.prov || '?'}`];
   if (p.acc !== 'null' && p.acc != null) rows.push(`précision ±${Math.round(p.acc)} m`);
   if (p.speed !== 'null' && p.speed != null && p.speed > 0) rows.push(`vitesse ${(p.speed * 3.6).toFixed(1)} km/h`);
   if (p.ele !== 'null' && p.ele != null) rows.push(`altitude ${Math.round(p.ele)} m`);
@@ -246,9 +340,10 @@ function render(fit = false) {
   const list = $('days');
   list.textContent = '';
 
+  const summary = { days: 0, dist: 0, stays: 0 };
   for (const day of state.selected) {
     const color = colorOf(day);
-    const pts = filtered(day);
+    const pts = showGps() ? filtered(day) : [];
     const dayStays = findStays(pts);
     const inStay = new Uint8Array(pts.length);
     for (const s of dayStays) {
@@ -305,19 +400,46 @@ function render(fit = false) {
       ends.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [l[LON], l[LAT]] }, properties: { color, start: false } });
     }
 
+    summary.days++;
+    summary.dist += dist;
+    summary.stays += dayStays.length;
+    if (state.selected.length > MAX_DAY_LIST) continue;
     const li = document.createElement('li');
     li.style.setProperty('--c', color);
     const total = (state.tracks.get(day) || []).length;
-    const stats = pts.length
-      ? `${fmtTime(pts[0][T])} → ${fmtTime(pts[pts.length - 1][T])} · ${(dist / 1000).toFixed(1)} km` +
+    const nPhotos = (state.photos.get(day) || []).length;
+    const photoText = nPhotos ? `${nPhotos} photo${plural(nPhotos)}` : '';
+    let stats;
+    if (!showGps()) stats = photoText || 'pas de photo';
+    else if (pts.length) {
+      stats = `${fmtTime(pts[0][T])} → ${fmtTime(pts[pts.length - 1][T])} · ${(dist / 1000).toFixed(1)} km` +
         (vmax > 0 ? ` · max ${(vmax * 3.6).toFixed(0)} km/h` : '') +
-        `<br>${pts.length} / ${total} points · ${dayStays.length} arrêt${dayStays.length > 1 ? 's' : ''}`
-      : state.tracks.has(day) ? `aucun point avec ces filtres (${total} au total)` : 'chargement…';
+        `<br>${pts.length} / ${total} points · ${dayStays.length} arrêt${plural(dayStays.length)}` +
+        (photoText ? ` · ${photoText}` : '');
+    } else if (!state.tracks.has(day)) stats = 'chargement…';
+    else stats = (total ? `aucun point avec ces filtres (${total} au total)` : 'pas de trace') +
+      (photoText ? ` · ${photoText}` : '');
     li.innerHTML = `<div class="t"><span class="sw"></span>${fmtDay(day)}</div><div class="s">${stats}</div>`;
     li.title = 'Centrer sur ce jour';
     li.onclick = () => fitTo([day]);
     list.append(li);
   }
+  if (state.selected.length > MAX_DAY_LIST) {
+    const sorted = [...state.selected].sort();
+    const nPhotos = showHere() ? state.here.total : selectedPhotos().length;
+    const li = document.createElement('li');
+    li.innerHTML = `<div class="t">${state.selected.length} jours</div><div class="s">` +
+      `${fmtDay(sorted[0])} → ${fmtDay(sorted[sorted.length - 1])}<br>` +
+      (showGps() ? `${(summary.dist / 1000).toFixed(0)} km · ${summary.stays} arrêts · ` : '') +
+      `${nPhotos} photo${plural(nPhotos)}</div>`;
+    li.title = 'Tout centrer';
+    li.onclick = () => fitTo(state.selected);
+    list.append(li);
+  }
+  const shownPhotos = photoFeatures();
+  // Frame all the selected photos, even with "Ici" (which then shows those in the new view).
+  // With "ici" the view stays where it is: that place is what the photos are filtered on.
+  if (showPhotos() && !showHere()) for (const p of selectedPhotos()) if (p.lat != null) bounds.extend([p.lon, p.lat]);
 
   renderLegend();
   mapReady.then(() => {
@@ -328,22 +450,193 @@ function render(fit = false) {
     map.getSource('points').setData({ type: 'FeatureCollection', features: points });
     map.getSource('ends').setData({ type: 'FeatureCollection', features: ends });
     map.getSource('stays').setData({ type: 'FeatureCollection', features: stays });
+    map.getSource('photos').setData({ type: 'FeatureCollection', features: shownPhotos });
     if (fit && !bounds.isEmpty()) map.fitBounds(bounds, { padding: 60, maxZoom: 16, duration: 600 });
   });
+  renderPhotos();
   renderCalendar();
   location.replace('#' + state.selected.join(','));
 }
 
+/* ---------- Photos ---------- */
+
+const selectedPhotos = () => state.selected.flatMap((d) => state.photos.get(d) || []).sort((a, b) => a.t - b.t);
+const shownPhotoList = () => !showPhotos() ? [] : showHere() ? state.here.photos : selectedPhotos();
+const fmtShortDay = (k) => keyDate(k).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+const plural = (n) => n > 1 ? 's' : '';
+
+function photoFeatures() {
+  return shownPhotoList().flatMap((p) => {
+    const at = locatePhoto(p);
+    return at ? [{
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [at.lon, at.lat] },
+      properties: { name: p.name, t: p.t, kind: p.kind, exact: at.exact, wd: weekday(p.day) },
+    }] : [];
+  });
+}
+
+/** Fill the photo panel; rebuilt only when the photos or their positions change. */
+function renderPhotos() {
+  const list = shownPhotoList();
+  const here = showHere();
+  const key = (here ? 'ici:' : '') + list.map((p) => p.name).join('|');
+  if (key === state.photoKey) return;
+  state.photoKey = key;
+  const all = !showPhotos() ? 0 : here ? state.here.total : selectedPhotos().length;
+  $('photos').hidden = $('photo-resizer').hidden = !all;
+  $('photo-count').textContent = here ? `ici · ${list.length} / ${all}` : list.length ? String(list.length) : '';
+  $('photo-note').hidden = !here || list.length > 0;
+  $('photo-note').textContent = 'Aucune photo de ces jours dans cette zone de la carte.';
+  const box = $('photo-list');
+  box.textContent = '';
+  const manyDays = state.selected.length > 1;
+  // Two portrait photos in a row share a line, to save space.
+  const portrait = (p) => p && p.h > p.w;
+  let row = null;
+  list.forEach((p, i) => {
+    const fig = document.createElement('figure');
+    fig.className = 'photo';
+    fig.dataset.name = p.name;
+    fig.style.setProperty('--c', colorOf(p.day));
+    if (p.name === state.highlighted) fig.classList.add('hl');
+    // Videos too are shown as their preview image: a click shows the place,
+    // "ouvrir" plays them.
+    const media = document.createElement('img');
+    media.loading = 'lazy';
+    media.alt = '';
+    media.src = photoUrl(p.name, true);
+    media.onclick = () => showPhotoOnMap(p);
+    media.ondblclick = () => window.open(photoUrl(p.name), '_blank', 'noopener'); // same as "ouvrir ↗"
+    media.title = 'Clic : voir sur la carte · double-clic : ouvrir';
+    const cap = document.createElement('figcaption');
+    const when = document.createElement('b');
+    when.textContent = (manyDays ? fmtShortDay(p.day) + ' ' : '') +
+      fmtTime(p.t) + (p.kind === 'video' ? ' · vidéo' : '');
+    when.title = 'Voir sur la carte';
+    when.style.cursor = 'pointer';
+    when.onclick = () => showPhotoOnMap(p);
+    const open = document.createElement('a');
+    open.href = photoUrl(p.name);
+    open.target = '_blank';
+    open.rel = 'noopener';
+    open.textContent = locatePhoto(p) ? 'ouvrir ↗' : 'hors trace · ouvrir ↗';
+    cap.append(when, open);
+    fig.append(media, cap);
+    if (row) {
+      row.append(fig);
+      row = null;
+    } else if (portrait(p) && portrait(list[i + 1])) {
+      row = document.createElement('div');
+      row.className = 'photo-pair';
+      row.append(fig);
+      box.append(row);
+    } else {
+      box.append(fig);
+    }
+  });
+}
+
+/* Drag the border between the photo panel and the map to change its width. */
+const PHOTO_WIDTH_KEY = 'souvenir.photoWidth';
+function setPhotoWidth(px) {
+  const max = Math.max(200, window.innerWidth - $('panel').offsetWidth - 200); // keep some map
+  const w = Math.round(Math.min(max, Math.max(200, px)));
+  $('photos').style.width = w + 'px';
+  return w;
+}
+try {
+  const saved = +localStorage.getItem(PHOTO_WIDTH_KEY);
+  if (saved) setPhotoWidth(saved);
+} catch { /* storage unavailable: default width */ }
+$('photo-resizer').addEventListener('pointerdown', (e) => {
+  const handle = e.currentTarget, startX = e.clientX, startW = $('photos').offsetWidth;
+  handle.setPointerCapture(e.pointerId);
+  handle.classList.add('dragging');
+  document.body.classList.add('resizing');
+  const move = (ev) => setPhotoWidth(startW + ev.clientX - startX);
+  const up = () => {
+    handle.removeEventListener('pointermove', move);
+    handle.classList.remove('dragging');
+    document.body.classList.remove('resizing');
+    try { localStorage.setItem(PHOTO_WIDTH_KEY, $('photos').offsetWidth); } catch { /* ignore */ }
+  };
+  handle.addEventListener('pointermove', move);
+  handle.addEventListener('pointerup', up, { once: true });
+  handle.addEventListener('pointercancel', up, { once: true });
+});
+$('photo-resizer').addEventListener('dblclick', () => {
+  $('photos').style.width = '';
+  try { localStorage.removeItem(PHOTO_WIDTH_KEY); } catch { /* ignore */ }
+});
+
+/* "ici": the server filters the selected days' photos on the view (a year of photos
+   is never sent to show the few taken here). Asked again when the map stops moving. */
+let hereRequest = null;
+async function loadHere() {
+  if (!showHere()) return;
+  hereRequest?.abort();
+  hereRequest = new AbortController();
+  const b = map.getBounds();
+  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((v) => v.toFixed(5)).join(',');
+  const days = [...state.selected].sort().join(',');
+  try {
+    const r = await fetch(`api/photos?days=${days}&bbox=${bbox}`, { signal: hereRequest.signal });
+    state.here = r.ok ? await r.json() : { total: 0, photos: [] };
+  } catch (e) {
+    if (e.name === 'AbortError') return; // the map or selection changed: a newer request is on its way
+    throw e;
+  }
+  updatePhotos();
+}
+map.on('moveend', loadHere);
+
+/** Refresh only the photo squares and panel (cheaper than render()). */
+function updatePhotos() {
+  mapReady.then(() => map.getSource('photos').setData({ type: 'FeatureCollection', features: photoFeatures() }));
+  renderPhotos();
+}
+
+function highlightPhoto(name, { scroll = false } = {}) {
+  state.highlighted = name;
+  for (const f of document.querySelectorAll('.photo.hl')) f.classList.remove('hl');
+  const fig = [...document.querySelectorAll('.photo')].find((f) => f.dataset.name === name);
+  if (fig) {
+    fig.classList.add('hl');
+    if (scroll) fig.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  mapReady.then(() => map.setLayoutProperty('photos', 'icon-image', photoIcon(name)));
+}
+
+function showPhotoOnMap(p) {
+  highlightPhoto(p.name);
+  const at = locatePhoto(p);
+  if (at) map.flyTo({ center: [at.lon, at.lat], zoom: Math.max(map.getZoom(), 15), duration: 800 });
+}
+
 function renderLegend() {
   const scale = SCALES[colorBy()];
-  $('legend').hidden = !scale;
-  if (!scale) return;
+  const ticks = $('legend').querySelector('.ticks');
+  $('legend').hidden = false;
+  ticks.classList.toggle('centered', !scale);
+  if (!scale) { // "Jour": the 7 weekday colours
+    const w = 100 / 7;
+    $('legend').querySelector('.bar').style.background = `linear-gradient(to right, ${
+      WEEKDAY_COLORS.map((c, i) => `${c} ${i * w}% ${(i + 1) * w}%`).join(', ')})`;
+    ticks.textContent = '';
+    WEEKDAY_LETTERS.forEach((l, i) => {
+      const s = document.createElement('span');
+      s.style.left = (i + 0.5) * w + '%';
+      s.textContent = l;
+      ticks.append(s);
+    });
+    return;
+  }
   const { stops, unit, even } = scale;
   const max = stops[stops.length - 1][0];
   const pos = (v, i) => (even ? i / (stops.length - 1) : v / max) * 100;
   $('legend').querySelector('.bar').style.background =
     `linear-gradient(to right, ${stops.map(([v, c], i) => `${c} ${pos(v, i)}%`).join(', ')})`;
-  const ticks = $('legend').querySelector('.ticks');
   ticks.textContent = '';
   stops.forEach(([v], i) => {
     if (scale.hideTicks?.includes(v)) return;
@@ -356,7 +649,10 @@ function renderLegend() {
 
 function fitTo(days) {
   const b = new LngLatBounds();
-  for (const d of days) for (const p of filtered(d)) b.extend([p[LON], p[LAT]]);
+  if (showGps()) for (const d of days) for (const p of filtered(d)) b.extend([p[LON], p[LAT]]);
+  if (showPhotos()) {
+    for (const d of days) for (const p of state.photos.get(d) || []) if (p.lat != null) b.extend([p.lon, p.lat]);
+  }
   if (!b.isEmpty()) map.fitBounds(b, { padding: 60, maxZoom: 16, duration: 600 });
 }
 
@@ -371,11 +667,37 @@ async function select(days, { add = false } = {}) {
   }
   if (state.selected.length) state.month = keyDate(state.selected[state.selected.length - 1]);
   render();
-  await Promise.all(state.selected.filter((d) => !state.tracks.has(d)).map(async (d) => {
-    const r = await fetch('api/track?day=' + d);
-    state.tracks.set(d, r.ok ? (await r.json()).points : []);
-  }));
+  await load();
   render(true);
+  loadHere();
+}
+
+/** Fetch what the selected days still miss: photos always, traces only if GPS is shown. */
+async function load() {
+  // With "ici", photos come filtered from the server (loadHere), not day by day.
+  const needPhotos = showHere() ? [] : state.selected.filter((d) => !state.photos.has(d));
+  const needTracks = showGps() ? state.selected.filter((d) => !state.tracks.has(d)) : [];
+  const batches = [];
+  for (let i = 0; i < needPhotos.length; i += 100) batches.push(needPhotos.slice(i, i + 100));
+  await Promise.all([
+    ...batches.map(async (days) => {
+      const r = await fetch('api/photos?days=' + days.join(','));
+      const list = r.ok ? await r.json() : [];
+      for (const d of days) state.photos.set(d, []);
+      for (const p of list) state.photos.get(p.day)?.push(p);
+    }),
+    ...needTracks.map(async (d) => {
+      const r = await fetch('api/track?day=' + d);
+      state.tracks.set(d, r.ok ? (await r.json()).points : []);
+    }),
+  ]);
+}
+
+/** Select every available day from a to b (inclusive), e.g. a week or a ⇧+click range. */
+function selectRange(a, b, opts) {
+  const [lo, hi] = a <= b ? [a, b] : [b, a];
+  const days = state.days.filter((d) => d >= lo && d <= hi);
+  if (days.length) select(days, opts);
 }
 
 /* ---------- Calendar ---------- */
@@ -384,6 +706,7 @@ function renderCalendar() {
   const m = state.month || new Date();
   const first = new Date(m.getFullYear(), m.getMonth(), 1);
   $('month-label').textContent = first.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+  syncYear();
   const grid = $('cal-grid');
   grid.textContent = '';
   for (const d of ['L', 'M', 'M', 'J', 'V', 'S', 'D']) {
@@ -404,7 +727,11 @@ function renderCalendar() {
     if (has.has(k)) {
       b.classList.add('has');
       b.title = fmtDay(k);
-      b.onclick = (e) => select([k], { add: e.ctrlKey || e.metaKey || e.shiftKey });
+      b.onclick = (e) => {
+        if (e.shiftKey && state.anchor) return selectRange(state.anchor, k);
+        state.anchor = k;
+        select([k], { add: e.ctrlKey || e.metaKey });
+      };
       if (state.selected.includes(k)) {
         b.classList.add('sel');
         b.style.setProperty('--c', colorOf(k));
@@ -421,6 +748,43 @@ function shiftMonth(delta) {
   state.month = new Date(m.getFullYear(), m.getMonth() + delta, 1);
   renderCalendar();
 }
+
+/* "Semaine": Monday to Sunday around the last clicked day; "Mois": the shown month;
+   "year": a whole year (chosen in the year menu). */
+function selectPeriod(kind) {
+  const m = state.month || new Date();
+  if (kind === 'week') {
+    const ref = state.anchor ? keyDate(state.anchor)
+      : keyDate(state.days.find((d) => d.startsWith(dayKey(m).slice(0, 6))) || dayKey(m));
+    const monday = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - (ref.getDay() + 6) % 7);
+    const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
+    selectRange(dayKey(monday), dayKey(sunday));
+  } else if (kind === 'month') {
+    selectRange(dayKey(new Date(m.getFullYear(), m.getMonth(), 1)), dayKey(new Date(m.getFullYear(), m.getMonth() + 1, 0)));
+  } else {
+    const y = kind === 'year' ? m.getFullYear() : kind;
+    selectRange(`${y}0101`, `${y}1231`);
+  }
+}
+
+/* Year menu: the years that have data, newest first; shows the calendar's year. */
+function fillYears() {
+  const menu = $('sel-year');
+  menu.textContent = '';
+  for (const y of [...new Set(state.days.map((d) => d.slice(0, 4)))].reverse()) {
+    menu.append(new Option(y, y));
+  }
+  syncYear();
+}
+function syncYear() {
+  const menu = $('sel-year'), y = String((state.month || new Date()).getFullYear());
+  if (document.activeElement !== menu && [...menu.options].some((o) => o.value === y)) menu.value = y;
+}
+// Choosing the year already shown must still select it: the menu forgets its value
+// while open (so any choice is a change) and gets it back if nothing was chosen.
+$('sel-year').addEventListener('focus', (e) => { e.target.selectedIndex = -1; });
+$('sel-year').addEventListener('change', (e) => { selectPeriod(e.target.value); e.target.blur(); });
+$('sel-year').addEventListener('blur', syncYear);
 
 function stepDay(delta) {
   if (!state.days.length) return;
@@ -448,6 +812,27 @@ for (const id of ['acc', 'network', 'from', 'to']) {
   });
 }
 for (const r of document.querySelectorAll('input[name=colorby]')) r.addEventListener('change', () => render());
+$('sel-week').onclick = () => selectPeriod('week');
+$('sel-month').onclick = () => selectPeriod('month');
+$('show-gps').addEventListener('change', async () => {
+  render();
+  if (showGps()) { await load(); render(); }
+});
+$('show-photos').addEventListener('change', () => {
+  $('show-here').disabled = !showPhotos();
+  render();
+  loadHere();
+});
+$('show-here').addEventListener('change', async () => {
+  if (showHere()) {
+    state.here = { total: 0, photos: [] };
+    updatePhotos();
+    loadHere();
+  } else {
+    await load(); // the per-day lists, not loaded while "ici" was on
+    render();
+  }
+});
 $('prev-month').onclick = () => shiftMonth(-1);
 $('next-month').onclick = () => shiftMonth(1);
 document.addEventListener('keydown', (e) => {
@@ -459,6 +844,7 @@ document.addEventListener('keydown', (e) => {
 (async () => {
   syncOutputs();
   state.days = await (await fetch('api/days')).json();
+  fillYears();
   $('count').textContent = `${state.days.length} jour${state.days.length > 1 ? 's' : ''}`;
   const fromHash = location.hash.slice(1).split(',').filter((d) => state.days.includes(d));
   const initial = fromHash.length ? fromHash : state.days.slice(-1);

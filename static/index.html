@@ -1,90 +1,137 @@
 <!doctype html>
 <html lang="fr">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="referrer" content="no-referrer">
-  <title>Souvenir</title>
-  <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="vendor/maplibre-gl.css">
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-  <aside id="panel">
-    <header>
-      <h1>Souvenir</h1>
-      <span class="muted" id="count"></span>
-    </header>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Souvenir</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="vendor/maplibre-gl.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <aside id="panel">
+      <header>
+        <h1>Souvenir</h1>
+        <span class="muted" id="count"></span>
+      </header>
 
-    <section class="cal">
-      <div class="cal-head">
-        <button id="prev-month" aria-label="Mois précédent">‹</button>
-        <strong id="month-label"></strong>
-        <button id="next-month" aria-label="Mois suivant">›</button>
-      </div>
-      <div class="cal-grid" id="cal-grid"></div>
-      <p class="hint">Clic : un jour · Ctrl/⇧+clic : ajouter · ← → : jour précédent/suivant</p>
-    </section>
+      <section class="cal">
+        <div class="cal-head">
+          <button id="prev-month" aria-label="Mois précédent">‹</button>
+          <strong id="month-label"></strong>
+          <button id="next-month" aria-label="Mois suivant">›</button>
+        </div>
+        <div class="cal-grid" id="cal-grid"></div>
+        <div class="range-buttons">
+          <button id="sel-week">Semaine</button>
+          <button id="sel-month">Mois</button>
+          <select id="sel-year" title="Choisir une année"></select>
+        </div>
+        <p class="hint">
+          Clic : un jour · Ctrl+clic : ajouter/retirer · ⇧+clic : période · ← →
+          : jour précédent/suivant
+        </p>
+      </section>
 
-    <section>
-      <h2>Filtres</h2>
-      <label class="row">
-        <span>Précision</span>
-        <input type="range" id="acc" min="5" max="200" step="5" value="50">
-        <output id="acc-out"></output>
-      </label>
-      <label class="check">
-        <input type="checkbox" id="network">
-        Inclure les positions réseau (Wi-Fi/antenne)
-      </label>
-      <label class="row">
-        <span>De</span>
-        <input type="range" id="from" min="0" max="96" step="1" value="0">
-        <output id="from-out"></output>
-      </label>
-      <label class="row">
-        <span>À</span>
-        <input type="range" id="to" min="0" max="96" step="1" value="96">
-        <output id="to-out"></output>
-      </label>
-    </section>
+      <section>
+        <h2>Filtres</h2>
+        <div class="show">
+          <label><input type="checkbox" id="show-gps" checked /> GPS</label>
+          <label
+            ><input type="checkbox" id="show-photos" checked /> Photo</label
+          >
+          <label
+            title="Seulement les photos des jours choisis prises dans la zone visible de la carte"
+            ><input type="checkbox" id="show-here" /> ici</label
+          >
+        </div>
+        <label class="row">
+          <span>Précision</span>
+          <input type="range" id="acc" min="5" max="200" step="5" value="50" />
+          <output id="acc-out"></output>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="network" />
+          Inclure les positions réseau
+        </label>
+        <label class="row">
+          <span>De</span>
+          <input type="range" id="from" min="0" max="96" step="1" value="0" />
+          <output id="from-out"></output>
+        </label>
+        <label class="row">
+          <span>À</span>
+          <input type="range" id="to" min="0" max="96" step="1" value="96" />
+          <output id="to-out"></output>
+        </label>
+      </section>
 
-    <section>
-      <h2>Couleur</h2>
-      <div class="seg" role="radiogroup">
-        <label><input type="radio" name="colorby" value="speed" checked> Vitesse</label>
-        <label><input type="radio" name="colorby" value="time"> Heure</label>
-        <label><input type="radio" name="colorby" value="day"> Jour</label>
-      </div>
-      <div id="legend">
-        <div class="bar"></div>
-        <div class="ticks"></div>
-      </div>
-    </section>
+      <section>
+        <h2>Couleur</h2>
+        <div class="seg" role="radiogroup">
+          <label
+            ><input type="radio" name="colorby" value="speed" checked />
+            Vitesse</label
+          >
+          <label
+            ><input type="radio" name="colorby" value="time" /> Heure</label
+          >
+          <label><input type="radio" name="colorby" value="day" /> Jour</label>
+        </div>
+        <div id="legend">
+          <div class="bar"></div>
+          <div class="ticks"></div>
+        </div>
+      </section>
 
-    <section>
-      <h2>Arrêts (surface = temps passé)</h2>
-      <!-- radius = 1.8 × √minutes, as STAY_PX in app.js -->
-      <svg class="stay-legend" viewBox="0 0 288 84" role="img" aria-label="10 min, 1 h, 8 h">
-        <circle cx="30" cy="42" r="5.7"/><text x="30" y="80">10 min</text>
-        <circle cx="100" cy="42" r="13.9"/><text x="100" y="80">1 h</text>
-        <circle cx="200" cy="42" r="39.4"/><text x="200" y="47">8 h</text>
-      </svg>
-    </section>
+      <section>
+        <h2>Arrêts (surface = temps passé)</h2>
+        <!-- radius = 1.8 × √minutes, as STAY_PX in app.js -->
+        <svg
+          class="stay-legend"
+          viewBox="0 0 288 84"
+          role="img"
+          aria-label="10 min, 1 h, 8 h"
+        >
+          <circle cx="30" cy="42" r="5.7" />
+          <text x="30" y="80">10 min</text>
+          <circle cx="100" cy="42" r="13.9" />
+          <text x="100" y="80">1 h</text>
+          <circle cx="200" cy="42" r="39.4" />
+          <text x="200" y="47">8 h</text>
+        </svg>
+      </section>
 
-    <section>
-      <h2>Jours affichés</h2>
-      <ul id="days"></ul>
-    </section>
+      <section>
+        <h2>Jours affichés</h2>
+        <ul id="days"></ul>
+      </section>
 
-    <footer class="muted">
-      Carte © <span>OpenStreetMap</span> contributors · Protomaps · MapLibre<br>
-      Tout est servi localement : aucune donnée ne sort.
-    </footer>
-  </aside>
-  <main id="map"></main>
-  <script src="vendor/pmtiles.js"></script>
-  <script src="vendor/basemaps.js"></script>
-  <script type="module" src="app.js"></script>
-</body>
+      <footer class="muted">
+        Carte © <span>OpenStreetMap</span> contributors · Protomaps ·
+        MapLibre<br />
+        Tout est servi localement : aucune donnée ne sort.
+      </footer>
+    </aside>
+    <aside id="photos" hidden>
+      <header>
+        <h2>Photos</h2>
+        <span class="muted" id="photo-count"></span>
+      </header>
+      <p class="hint" id="photo-note" hidden></p>
+      <div id="photo-list"></div>
+    </aside>
+    <div
+      id="photo-resizer"
+      role="separator"
+      aria-orientation="vertical"
+      title="Glisser pour redimensionner"
+      hidden
+    ></div>
+    <main id="map"></main>
+    <script src="vendor/pmtiles.js"></script>
+    <script src="vendor/basemaps.js"></script>
+    <script type="module" src="app.js"></script>
+  </body>
 </html>

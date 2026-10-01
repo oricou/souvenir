@@ -11,13 +11,31 @@ from contacting any other site, so neither the traces nor the viewed area leak.
 
     python3 server.py            # then open http://127.0.0.1:8000/
 
-Options: `--data DIR` (default `./data`), `--port`, `--host` (default
+Options: `--data DIR` (default `./data`), `--gps DIR` (default `DATA/gps`),
+`--photos DIR` (default `DATA/photos`), `--port`, `--host` (default
 `127.0.0.1`; use `0.0.0.0` to reach it from other devices on your LAN).
 
 ## Add days
 
-Drop the `YYYYMMDD.zip` files into `data/` (plain `.csv` or `.gpx` also work).
+Drop the `YYYYMMDD.zip` files into `data/gps/` (plain `.csv` or `.gpx` also work,
+as do the old GPSLogger names with a space, `YYYYMMDD .gpx` / `.zip` / `.txt`).
+When a day has several files: zip, then csv, then gpx, then txt. Empty files
+are ignored.
 No restart needed; reload the page.
+
+## Photos
+
+Drop photos and videos into `data/photos/` (subfolders allowed, e.g.
+`data/photos/2026/09/`). Each one is shown on the day it was
+taken (time read from EXIF / the video file, or from Pixel `PXL_…` names), in a
+panel next to the controls, and as a green square on the map: at its own GPS
+position if the camera saved one, otherwise where the trace was at that time.
+Previews are made once into `cache/thumbs/` (needs Pillow; ffmpeg for videos).
+Photo times and sizes are indexed in `cache/photos.json`, so a restart does not
+re-read thousands of files; the folders are re-scanned whenever a file is added,
+removed or renamed. A photo edited in place is only re-read after a restart.
+Deleting `cache/` is safe (everything is rebuilt, which takes ~1 s per 1,500
+photos).
 
 ## Update the map
 
@@ -45,14 +63,18 @@ files or third-party libraries.
 ```
 souvenir/
 ├── server.py          the server
+├── photos.py          photo times, positions and previews
 ├── README.md          this file
-├── data/              the traces, one zip per day
+├── data/
+│   ├── gps/           the traces, one zip per day
+│   └── photos/        photos and videos (subfolders allowed)
 ├── static/            everything the browser loads
 │   ├── index.html     page structure
 │   ├── style.css      page look
 │   ├── app.js         map and all the logic
 │   ├── vendor/        JS libraries (downloaded)
 │   └── assets/        map fonts and icons (downloaded)
+├── cache/             photo index and previews (generated)
 ├── tiles/             the maps: world and France (downloaded)
 └── tools/pmtiles      tool used to download the map
 ```
@@ -61,10 +83,12 @@ souvenir/
 
 **`server.py`** (Python standard library only) does three things:
 
-1. **API**: `/api/days` lists the days in `data/`. `/api/track?day=20260928`
-   opens that zip, reads the CSV (or the GPX if there is no CSV) and returns the
-   points as JSON: time, lat, lon, altitude, accuracy, speed, source
-   (gps/network) and battery.
+1. **API**: `/api/days` lists the days that have a trace or photos.
+   `/api/track?day=20260928` opens that zip, reads the CSV (or the GPX if there
+   is no CSV) and returns the points as JSON: time, lat, lon, altitude,
+   accuracy, speed, source (gps/network) and battery. `/api/photos?days=…`
+   returns the photos of those days with their position, computed by the
+   server (`photos.locate`) and stored in the photo index.
 2. **Map tiles**: `/api/maps` lists the maps in `tiles/`, and each
    `tiles/NAME.pmtiles` is served in pieces. The browser asks for
    byte ranges (HTTP `Range` requests), so only the part of the map on screen is
@@ -99,7 +123,7 @@ phone the panel moves below the map.
 
 ### Data
 
-**`data/`**: one GPSLogger zip per day. Each zip holds the same trace in three
+**`data/gps/`**: one GPSLogger zip per day. Each zip holds the same trace in three
 formats (CSV, GPX, KML); only the CSV is read, as it has the most detail
 (accuracy, battery).
 
