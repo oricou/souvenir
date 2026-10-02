@@ -246,17 +246,28 @@ class Handler(SimpleHTTPRequestHandler):
         if thumb:
             path = photos.thumbnail(self.photo_dir, name, THUMBS_DIR)
             if path:
-                return self.send_ranged(path, "image/jpeg")
+                return self.send_ranged(path, "image/jpeg", revalidate=True)
             if os.path.splitext(name)[1].lower() in photos.VIDEO_EXT:
                 return self.send_error(HTTPStatus.NOT_FOUND, "No video preview (ffmpeg missing)")
         path = os.path.join(self.photo_dir, name)
-        return self.send_ranged(path, mimetypes.guess_type(name)[0] or "application/octet-stream")
+        return self.send_ranged(path, mimetypes.guess_type(name)[0] or "application/octet-stream",
+                                revalidate=True)
 
-    def send_ranged(self, path, content_type="application/octet-stream"):
-        """Serve a file with HTTP Range support (needed by PMTiles and videos)."""
+    def send_ranged(self, path, content_type="application/octet-stream", revalidate=False):
+        """Serve a file with HTTP Range support (needed by PMTiles and videos).
+
+        revalidate: let the browser keep the file but check it on each use
+        ("no-cache"); an unchanged file then costs a 304 instead of a download."""
         if not os.path.isfile(path):
             return self.send_error(HTTPStatus.NOT_FOUND, "File not found")
-        size = os.path.getsize(path)
+        st = os.stat(path)
+        size, etag = st.st_size, f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+        if revalidate and not self.headers.get("Range") and self.headers.get("If-None-Match") == etag:
+            self.send_response(HTTPStatus.NOT_MODIFIED)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
         start, end = 0, size - 1
         rng = self.headers.get("Range")
         m = re.match(r"bytes=(\d*)-(\d*)$", rng or "")
@@ -280,7 +291,9 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(length))
-        self.send_header("ETag", f'"{int(os.path.getmtime(path))}-{size}"')
+        self.send_header("ETag", etag)
+        if revalidate:
+            self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         with open(path, "rb") as f:
             f.seek(start)

@@ -625,7 +625,17 @@ function showPhotoOnMap(p) {
 /* ---------- Full-screen viewer: the panel's photos one by one ---------- */
 
 const VIEWER_AUTO_MS = 5000; // automatic playback: time per photo
-const viewer = { list: [], i: 0, timer: null, idle: null };
+const viewer = { list: [], i: 0, timer: null, idle: null, ready: new globalThis.Map() };
+
+/** Download and decode a full-size photo ahead of time (kept in viewer.ready). */
+function preload(p) {
+  if (!p || p.kind === 'video' || viewer.ready.has(p.name)) return;
+  const img = new Image();
+  img.alt = '';
+  img.src = photoUrl(p.name);
+  img.decode().catch(() => { /* shown as the preview, then retried normally */ });
+  viewer.ready.set(p.name, img);
+}
 const viewerOpen = () => !$('viewer').hidden;
 
 function openViewer() {
@@ -642,6 +652,7 @@ function closeViewer() {
   if (!viewerOpen()) return;
   stopAuto();
   $('viewer').hidden = true;
+  viewer.ready.clear(); // free the decoded full-size images
   $('viewer').querySelector('.v-stage').textContent = ''; // stops a playing video
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   const p = viewer.list[viewer.i];
@@ -662,18 +673,25 @@ function showInViewer() {
     v.onended = () => { if (viewer.timer) step(1); };
     stage.append(v);
   } else {
-    // The preview shows at once; the full-size original replaces it when loaded.
-    const img = document.createElement('img');
-    img.alt = '';
-    img.src = photoUrl(p.name, true);
-    stage.append(img);
-    const full = new Image();
-    full.onload = () => { if (viewer.list[viewer.i] === p) img.src = full.src; };
-    full.src = photoUrl(p.name);
+    preload(p);
+    const full = viewer.ready.get(p.name);
+    if (full.complete && full.naturalWidth) {
+      stage.append(full); // already downloaded and decoded: shown at once
+    } else {
+      // Not ready yet: the preview shows at once, the original replaces it when decoded.
+      const thumb = document.createElement('img');
+      thumb.alt = '';
+      thumb.src = photoUrl(p.name, true);
+      stage.append(thumb);
+      full.decode().then(() => { if (viewer.list[viewer.i] === p) thumb.replaceWith(full); }, () => {});
+    }
   }
-  // Load the next photo in advance.
-  const next = viewer.list[viewer.i + 1];
-  if (next && next.kind !== 'video') new Image().src = photoUrl(next.name);
+  // Keep the neighbours ready (next two, previous one) and forget the others.
+  const keep = viewer.list.slice(Math.max(0, viewer.i - 1), viewer.i + 3);
+  keep.forEach(preload);
+  for (const name of viewer.ready.keys()) {
+    if (!keep.some((k) => k.name === name)) viewer.ready.delete(name);
+  }
   const at = locatePhoto(p);
   $('viewer').querySelector('.v-caption').textContent = `${fmtDate(p.t)} · ${fmtTime(p.t)}` +
     (p.kind === 'video' ? ' · vidéo' : '') +
