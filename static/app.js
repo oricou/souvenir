@@ -506,6 +506,14 @@ function renderPhotos() {
     media.loading = 'lazy';
     media.alt = '';
     media.src = photoUrl(p.name, true);
+    // Reserve the final height before the lazy image loads (width/height give the
+    // aspect ratio), so scrolling to a photo is not thrown off by images growing.
+    if (p.w && p.h) {
+      media.width = p.w;
+      media.height = p.h;
+    } else {
+      media.style.aspectRatio = '4 / 3';
+    }
     media.onclick = () => showPhotoOnMap(p);
     media.ondblclick = () => window.open(photoUrl(p.name), '_blank', 'noopener'); // same as "ouvrir ↗"
     media.title = 'Clic : voir sur la carte · double-clic : ouvrir';
@@ -603,7 +611,7 @@ function highlightPhoto(name, { scroll = false } = {}) {
   const fig = [...document.querySelectorAll('.photo')].find((f) => f.dataset.name === name);
   if (fig) {
     fig.classList.add('hl');
-    if (scroll) fig.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (scroll) fig.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
   mapReady.then(() => map.setLayoutProperty('photos', 'icon-image', photoIcon(name)));
 }
