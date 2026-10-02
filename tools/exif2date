@@ -1,0 +1,2 @@
+#! /bin/bash
+exiftool -api QuickTimeUTC '-FileModifyDate<CreateDate' '-FileModifyDate<DateTimeOriginal' '-FileModifyDate<SubSecDateTimeOriginal' $@

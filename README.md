@@ -7,6 +7,15 @@ traces, OpenStreetMap vector tiles for France, fonts, icons and JS libraries.
 A strict Content-Security-Policy (`connect-src 'self'`…) prevents the browser
 from contacting any other site, so neither the traces nor the viewed area leak.
 
+## Requirements
+
+- Python 3 (the server needs nothing else).
+- Optional, for photos: Pillow (`sudo apt install python3-pil`) for photo
+  dates/positions and previews, ffmpeg (`sudo apt install ffmpeg`) for video
+  previews. Without them, times come from `PXL_…` file names and full images
+  are served.
+- For `tools/edit_photo.py`: ExifTool (`sudo apt install libimage-exiftool-perl`).
+
 ## Run
 
     python3 server.py            # then open http://127.0.0.1:8000/
@@ -43,6 +52,8 @@ Two maps are stacked: a coarse `world` (zoom 0–10, 3.8 GB) and a detailed
 `france` (zoom 0–15, 9.5 GB) drawn on top from zoom 10. Either can be missing;
 the page uses whatever is in `tiles/` (restart the server after adding one).
 
+To download maps you need pmtiles, cf https://github.com/protomaps/go-pmtiles
+
 Pick a recent build date from https://build.protomaps.com/ and run:
 
     ./tools/pmtiles extract https://build.protomaps.com/YYYYMMDD.pmtiles \
@@ -54,6 +65,19 @@ Pick a recent build date from https://build.protomaps.com/ and run:
     mv tiles/world-new.pmtiles tiles/world.pmtiles
 
 Add `--dry-run` to see the size first (each extra zoom level is about ×2.5).
+
+## Tools
+
+- `tools/edit_photo.py PHOTO` edits a photo's date and GPS position
+  interactively (fields pre-filled; `trace` takes the position from the GPS
+  traces). For many photos at once: `--pos LAT,LON`, `--from-trace`,
+  `--date "…"`, `--shift +1h`, `--clear-gps`, `--dry-run`. JPEG only. Uses
+  ExifTool, so nothing but the metadata changes; originals are kept in
+  `cache/photo_backups/`.
+- `tools/dedup.py DIR [-r]` lists files with identical content; `--delete`
+  removes the extra copies, `--trash DIR` moves them aside.
+
+Both have `--help`.
 
 ## Layout
 
@@ -76,7 +100,10 @@ souvenir/
 │   └── assets/        map fonts and icons (downloaded)
 ├── cache/             photo index and previews (generated)
 ├── tiles/             the maps: world and France (downloaded)
-└── tools/pmtiles      tool used to download the map
+└── tools/
+    ├── pmtiles        tool used to download the map
+    ├── edit_photo.py  set a photo's date / position
+    └── dedup.py       find and remove duplicate files
 ```
 
 ### Source code
