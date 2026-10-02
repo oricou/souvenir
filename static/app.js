@@ -899,25 +899,32 @@ function shiftMonth(delta) {
   renderCalendar();
 }
 
-/* "Semaine": Monday to Sunday around the last clicked day; "Mois": the shown month;
-   "year": a whole year (chosen in the year menu). */
-function selectPeriod(kind) {
+/* "Semaine": Monday to Sunday around the last clicked day (or the shown month's first day with data). */
+function selectWeek() {
   const m = state.month || new Date();
-  if (kind === 'week') {
-    const ref = state.anchor ? keyDate(state.anchor)
-      : keyDate(state.days.find((d) => d.startsWith(dayKey(m).slice(0, 6))) || dayKey(m));
-    const monday = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - (ref.getDay() + 6) % 7);
-    const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
-    selectRange(dayKey(monday), dayKey(sunday));
-  } else if (kind === 'month') {
-    selectRange(dayKey(new Date(m.getFullYear(), m.getMonth(), 1)), dayKey(new Date(m.getFullYear(), m.getMonth() + 1, 0)));
-  } else {
-    const y = kind === 'year' ? m.getFullYear() : kind;
-    selectRange(`${y}0101`, `${y}1231`);
-  }
+  const ref = state.anchor ? keyDate(state.anchor)
+    : keyDate(state.days.find((d) => d.startsWith(dayKey(m).slice(0, 6))) || dayKey(m));
+  const monday = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - (ref.getDay() + 6) % 7);
+  const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
+  selectRange(dayKey(monday), dayKey(sunday));
 }
 
-/* Year menu: the years that have data, newest first; shows the calendar's year. */
+/* Year and month menus. The year menu shows the calendar's year; the month menu
+   keeps the user's choice ("*" = whole year, the default), so choosing a year
+   selects that month of it: handy to compare the same month across years. */
+const shownYear = () => String((state.month || new Date()).getFullYear());
+let monthChoice = '*';
+
+/** Select a whole year (month "*") or one month of it. */
+function selectYearMonth(y, m) {
+  const [from, to] = m === '*' ? [`${y}0101`, `${y}1231`]
+    : [`${y}${m}01`, `${y}${m}${new Date(+y, +m, 0).getDate()}`]; // day 0 of next month = last day
+  if (state.days.some((d) => d >= from && d <= to)) return selectRange(from, to);
+  // Nothing in that period: at least show it in the calendar, so the menus stay coherent.
+  state.month = new Date(+y, m === '*' ? 0 : +m - 1, 1);
+  renderCalendar();
+}
+
 function fillYears() {
   const menu = $('sel-year');
   menu.textContent = '';
@@ -927,14 +934,41 @@ function fillYears() {
   syncYear();
 }
 function syncYear() {
-  const menu = $('sel-year'), y = String((state.month || new Date()).getFullYear());
+  const menu = $('sel-year'), y = shownYear();
   if (document.activeElement !== menu && [...menu.options].some((o) => o.value === y)) menu.value = y;
+  fillMonths();
 }
-// Choosing the year already shown must still select it: the menu forgets its value
+/** "Mois" (value "*": whole year) then the 12 months; months of the shown year without data are greyed out. */
+function fillMonths() {
+  const menu = $('sel-month'), y = shownYear();
+  if (document.activeElement === menu) return;
+  const withData = new Set(state.days.filter((d) => d.startsWith(y)).map((d) => d.slice(4, 6)));
+  menu.textContent = '';
+  menu.append(new Option('Mois', '*')); // all the months
+  for (let m = 1; m <= 12; m++) {
+    const mm = pad(m);
+    const o = new Option(new Date(2000, m - 1, 1).toLocaleDateString('fr-FR', { month: 'short' }), mm);
+    o.disabled = !withData.has(mm);
+    menu.append(o);
+  }
+  menu.value = monthChoice;
+}
+// Choosing the value already shown must still select it: a menu forgets its value
 // while open (so any choice is a change) and gets it back if nothing was chosen.
-$('sel-year').addEventListener('focus', (e) => { e.target.selectedIndex = -1; });
-$('sel-year').addEventListener('change', (e) => { selectPeriod(e.target.value); e.target.blur(); });
-$('sel-year').addEventListener('blur', syncYear);
+for (const id of ['sel-year', 'sel-month']) {
+  $(id).addEventListener('focus', (e) => { e.target.selectedIndex = -1; });
+  $(id).addEventListener('blur', syncYear);
+}
+$('sel-year').addEventListener('change', (e) => {
+  const y = e.target.value;
+  e.target.blur();
+  selectYearMonth(y, monthChoice);
+});
+$('sel-month').addEventListener('change', (e) => {
+  monthChoice = e.target.value;
+  e.target.blur();
+  selectYearMonth(shownYear(), monthChoice);
+});
 
 function stepDay(delta) {
   if (!state.days.length) return;
@@ -962,8 +996,7 @@ for (const id of ['acc', 'network', 'from', 'to']) {
   });
 }
 for (const r of document.querySelectorAll('input[name=colorby]')) r.addEventListener('change', () => render());
-$('sel-week').onclick = () => selectPeriod('week');
-$('sel-month').onclick = () => selectPeriod('month');
+$('sel-week').onclick = selectWeek;
 $('show-gps').addEventListener('change', async () => {
   render();
   if (showGps()) { await load(); render(); }
@@ -989,6 +1022,7 @@ document.addEventListener('keydown', (e) => {
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || viewerOpen()) return; // the viewer has its own keys
   if (e.key === 'ArrowLeft') stepDay(-1);
   if (e.key === 'ArrowRight') stepDay(1);
+  if (e.key === 'd' && !e.ctrlKey && !e.metaKey && !e.altKey && !$('photos').hidden) return openViewer(); // diaporama
   // Page Up / Down, Home / End scroll the photo panel, without clicking in it first.
   const panel = $('photos');
   if (panel.hidden) return;

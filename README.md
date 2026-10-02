@@ -37,7 +37,7 @@ No restart needed; reload the page.
 Drop photos and videos into `data/photos/` (subfolders allowed, e.g.
 `data/photos/2026/09/`). Each one is shown on the day it was
 taken (time read from EXIF / the video file, or from Pixel `PXL_…` names), in a
-panel next to the controls, and as a green square on the map: at its own GPS
+panel next to the controls, and as a square on the map in the day's colour: at its own GPS
 position if the camera saved one, otherwise where the trace was at that time.
 Previews are made once into `cache/thumbs/` (needs Pillow; ffmpeg for videos).
 Photo times and sizes are indexed in `cache/photos.json`, so a restart does not
@@ -45,6 +45,18 @@ re-read thousands of files; the folders are re-scanned whenever a file is added,
 removed or renamed. A photo edited in place is only re-read after a restart.
 Deleting `cache/` is safe (everything is rebuilt, which takes ~1 s per 1,500
 photos).
+
+## Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| ← → | previous / next day |
+| Page Up / Page Down | scroll the photo panel by one screen |
+| Home / End | first / last photo of the panel |
+| d | full-screen slideshow (diaporama) of the panel's photos |
+
+In the slideshow: ← → previous / next photo, Space starts or stops automatic
+playback (5 s per photo), Esc closes.
 
 ## Update the map
 
