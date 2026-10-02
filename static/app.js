@@ -7,7 +7,8 @@ import { Map, Popup, LngLatBounds, NavigationControl, ScaleControl, addProtocol 
 const WEEKDAY_COLORS = ['#2563eb', '#16a34a', '#f59e0b', '#9333ea', '#0891b2', '#ff91a4', '#dc2626'];
 const WEEKDAY_LETTERS = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
 // Point fields as sent by /api/track.
-const T = 0, LAT = 1, LON = 2, ELE = 3, ACC = 4, SPEED = 5, PROV = 6, BAT = 7;
+// OFF: local offset (minutes from UTC) where the point was, null without tiles/timezones.bin.
+const T = 0, LAT = 1, LON = 2, ELE = 3, ACC = 4, SPEED = 5, PROV = 6, BAT = 7, OFF = 8;
 
 // Colour scales for the trace, keyed by the "Couleur" choice. `prop` is the segment
 // property they read; `even` spaces the legend stops evenly instead of linearly.
@@ -214,7 +215,25 @@ const pad = (n) => String(n).padStart(2, '0');
 const dayKey = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
 const keyDate = (k) => new Date(+k.slice(0, 4), +k.slice(4, 6) - 1, +k.slice(6, 8));
 const fmtDay = (k) => keyDate(k).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' });
-const fmtTime = (ms) => new Date(ms).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+/* Times are shown in the local time of the place (off = minutes from UTC, from
+   the server's time-zone map); with off unknown, in this computer's time. */
+const num = (v) => (v == null || v === 'null' ? null : +v); // map feature properties may be "null"
+const atPlace = (ms, off) => num(off) == null ? [new Date(ms), undefined] : [new Date(ms + num(off) * 60e3), 'UTC'];
+const fmtTime = (ms, off) => {
+  const [d, timeZone] = atPlace(ms, off);
+  return d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone });
+};
+/** " (UTC+13)" when the place's zone differs from this computer's at that time, else "". */
+const tzLabel = (ms, off) => {
+  off = num(off);
+  if (off == null || off === -new Date(ms).getTimezoneOffset()) return '';
+  const h = Math.trunc(Math.abs(off) / 60), m = Math.abs(off) % 60;
+  return ` (UTC${off < 0 ? '−' : '+'}${h}${m ? ':' + pad(m) : ''})`;
+};
+/** Hours since the start of the trace's day, in local time at the place. */
+const localHour = (ms, off, day) => num(off) == null
+  ? (ms - keyDate(day).getTime()) / 3.6e6
+  : (ms + num(off) * 60e3 - Date.UTC(+day.slice(0, 4), +day.slice(4, 6) - 1, +day.slice(6, 8))) / 3.6e6;
 const fmtQuarter = (q) => q >= 96 ? '24:00' : `${pad(Math.floor(q / 4))}:${pad((q % 4) * 15)}`;
 const weekday = (day) => (keyDate(day).getDay() + 6) % 7; // 0 = Monday
 const colorOf = (day) => WEEKDAY_COLORS[weekday(day)];
@@ -290,7 +309,8 @@ const photoUrl = (name, thumb) => `${thumb ? 'thumbs' : 'photos'}/${name.split('
 
 function photoInfo(p) {
   return `<img class="pop-img" src="${photoUrl(p.name, true)}" alt=""><br>` +
-    `<b>${state.selected.length > 1 ? fmtShortDay(p.day) + ' ' : ''}${fmtTime(p.t)}</b>${p.kind === 'video' ? ' · vidéo' : ''}` +
+    `<b>${state.selected.length > 1 ? fmtShortDay(p.day) + ' ' : ''}${fmtTime(p.t, p.off)}</b>${tzLabel(p.t, p.off)}` +
+    (p.kind === 'video' ? ' · vidéo' : '') +
     (p.exact ? '' : '<br><span class="pop-note">position estimée d’après la trace</span>');
 }
 
@@ -300,17 +320,20 @@ function photoInfo(p) {
  */
 const locatePhoto = (p) => p.lat != null && p.lon != null ? { lat: p.lat, lon: p.lon, exact: p.exact } : null;
 
-const fmtDate = (ms) => new Date(ms).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+const fmtDate = (ms, off) => {
+  const [d, timeZone] = atPlace(ms, off);
+  return d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone });
+};
 
 function stayInfo(p) {
-  const start = fmtDate(p.start), end = fmtDate(p.end); // a stay can span midnight
+  const start = fmtDate(p.start, p.off), end = fmtDate(p.end, p.off); // a stay can span midnight
   return `${start === end ? start : `${start} → ${end}`}<br>` +
-    `<b>${fmtTime(p.start)} → ${fmtTime(p.end)}</b><br>` +
+    `<b>${fmtTime(p.start, p.off)} → ${fmtTime(p.end, p.off)}</b>${tzLabel(p.start, p.off)}<br>` +
     `${fmtDuration(p.min)} sur place · ${p.n} points`;
 }
 
 function pointInfo(p) {
-  const rows = [`${fmtDate(p.t)}<br><b>${fmtTime(p.t)}</b> · ${p.prov || '?'}`];
+  const rows = [`${fmtDate(p.t, p.off)}<br><b>${fmtTime(p.t, p.off)}</b>${tzLabel(p.t, p.off)} · ${p.prov || '?'}`];
   if (p.acc !== 'null' && p.acc != null) rows.push(`précision ±${Math.round(p.acc)} m`);
   if (p.speed !== 'null' && p.speed != null && p.speed > 0) rows.push(`vitesse ${(p.speed * 3.6).toFixed(1)} km/h`);
   if (p.ele !== 'null' && p.ele != null) rows.push(`altitude ${Math.round(p.ele)} m`);
@@ -325,13 +348,14 @@ function filtered(day) {
   const maxAcc = +$('acc').value;
   const withNet = $('network').checked;
   const from = +$('from').value, to = +$('to').value;
-  const midnight = keyDate(day).getTime();
-  // Quarter-hours since local midnight (DST-safe enough for display purposes).
-  const lo = midnight + from * 15 * 60e3, hi = midnight + to * 15 * 60e3;
-  return pts.filter((p) =>
-    (withNet || p[PROV] !== 'network') &&
-    (p[ACC] == null || p[ACC] <= maxAcc) &&
-    p[T] >= lo && p[T] <= hi);
+  // From / to: quarter-hours since midnight, local time at the place.
+  const lo = from / 4, hi = to / 4;
+  return pts.filter((p) => {
+    if (!withNet && p[PROV] === 'network') return false;
+    if (p[ACC] != null && p[ACC] > maxAcc) return false;
+    const h = localHour(p[T], p[OFF], day);
+    return h >= lo && h <= hi;
+  });
 }
 
 function render(fit = false) {
@@ -352,7 +376,7 @@ function render(fit = false) {
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
         properties: {
-          color, n: s.n, start: pts[s.first][T], end: pts[s.last][T],
+          color, n: s.n, start: pts[s.first][T], end: pts[s.last][T], off: pts[s.first][OFF],
           min: (pts[s.last][T] - pts[s.first][T]) / 60e3,
         },
       });
@@ -367,7 +391,7 @@ function render(fit = false) {
       points.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [p[LON], p[LAT]] },
-        properties: { color, t: p[T], acc: p[ACC], speed: p[SPEED], ele: p[ELE], prov: p[PROV], bat: p[BAT] },
+        properties: { color, t: p[T], acc: p[ACC], speed: p[SPEED], ele: p[ELE], prov: p[PROV], bat: p[BAT], off: p[OFF] },
       });
     }
     if (pts.length > 1 && colorBy() === 'day') {
@@ -378,7 +402,6 @@ function render(fit = false) {
       });
     } else {
       // One segment per pair of points, coloured by its speed or time of day.
-      const midnight = keyDate(day).getTime();
       for (let i = 1; i < pts.length; i++) {
         const a = pts[i - 1], b = pts[i];
         const ms = a[SPEED] != null && b[SPEED] != null
@@ -389,7 +412,7 @@ function render(fit = false) {
           geometry: { type: 'LineString', coordinates: [[a[LON], a[LAT]], [b[LON], b[LAT]]] },
           properties: {
             color, kmh: ms * 3.6,
-            hour: Math.min(24, Math.max(0, ((a[T] + b[T]) / 2 - midnight) / 3.6e6)),
+            hour: Math.min(24, Math.max(0, localHour((a[T] + b[T]) / 2, a[OFF], day))),
           },
         });
       }
@@ -412,7 +435,9 @@ function render(fit = false) {
     let stats;
     if (!showGps()) stats = photoText || 'pas de photo';
     else if (pts.length) {
-      stats = `${fmtTime(pts[0][T])} → ${fmtTime(pts[pts.length - 1][T])} · ${(dist / 1000).toFixed(1)} km` +
+      const first = pts[0], last = pts[pts.length - 1];
+      stats = `${fmtTime(first[T], first[OFF])} → ${fmtTime(last[T], last[OFF])}${tzLabel(first[T], first[OFF])}` +
+        ` · ${(dist / 1000).toFixed(1)} km` +
         (vmax > 0 ? ` · max ${(vmax * 3.6).toFixed(0)} km/h` : '') +
         `<br>${pts.length} / ${total} points · ${dayStays.length} arrêt${plural(dayStays.length)}` +
         (photoText ? ` · ${photoText}` : '');
@@ -520,7 +545,7 @@ function renderPhotos() {
     const cap = document.createElement('figcaption');
     const when = document.createElement('b');
     when.textContent = (manyDays ? fmtShortDay(p.day) + ' ' : '') +
-      fmtTime(p.t) + (p.kind === 'video' ? ' · vidéo' : '');
+      fmtTime(p.t, p.off) + tzLabel(p.t, p.off) + (p.kind === 'video' ? ' · vidéo' : '');
     when.title = 'Voir sur la carte';
     when.style.cursor = 'pointer';
     when.onclick = () => showPhotoOnMap(p);
@@ -693,7 +718,7 @@ function showInViewer() {
     if (!keep.some((k) => k.name === name)) viewer.ready.delete(name);
   }
   const at = locatePhoto(p);
-  $('viewer').querySelector('.v-caption').textContent = `${fmtDate(p.t)} · ${fmtTime(p.t)}` +
+  $('viewer').querySelector('.v-caption').textContent = `${fmtDate(p.t, p.off)} · ${fmtTime(p.t, p.off)}${tzLabel(p.t, p.off)}` +
     (p.kind === 'video' ? ' · vidéo' : '') +
     (at ? ` · ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)}${at.exact ? '' : ' (estimée)'}` : ' · hors trace');
   $('viewer').querySelector('.v-count').textContent = `${viewer.i + 1} / ${viewer.list.length}`;

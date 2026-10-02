@@ -25,6 +25,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 import photos
+import timezones
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 # Daily trace files. GPSLogger's old versions (2016-2017) put a space before the
@@ -101,6 +102,8 @@ def get_track(gps_dir, day):
         except (zipfile.BadZipFile, ET.ParseError, UnicodeDecodeError, OSError) as e:
             print(f"warning: cannot read {path}: {e}", file=sys.stderr)
             points = []
+        for p in points:  # 9th field: local offset (minutes from UTC) at that place and time
+            p.append(timezones.offset(p[1], p[2], p[0]))
         hit = (mtime, points)
         _tracks[path] = hit
     return hit
@@ -324,6 +327,10 @@ def main():
     Handler.photo_dir = os.path.abspath(args.photos or os.path.join(args.data, "photos"))
     if not os.path.isdir(Handler.gps_dir) and not os.path.isdir(Handler.photo_dir):
         sys.exit(f"Neither {Handler.gps_dir} nor {Handler.photo_dir} exists")
+    if timezones.get():
+        print("Time zones: local time of each place (tiles/timezones.bin)")
+    else:
+        print("Time zones: none (run tools/build_timezones.py), times shown in this computer's zone")
     maps = list_maps()
     if not maps:
         print("warning: no tiles/*.pmtiles, the map background will be empty")

@@ -15,6 +15,7 @@ from contacting any other site, so neither the traces nor the viewed area leak.
   previews. Without them, times come from `PXL_…` file names and full images
   are served.
 - For `tools/edit_photo.py`: ExifTool (`sudo apt install libimage-exiftool-perl`).
+- For `tools/build_timezones.py` (run once): NumPy (`sudo apt install python3-numpy`).
 
 ## Run
 
@@ -45,6 +46,20 @@ re-read thousands of files; the folders are re-scanned whenever a file is added,
 removed or renamed. A photo edited in place is only re-read after a restart.
 Deleting `cache/` is safe (everything is rebuilt, which takes ~1 s per 1,500
 photos).
+
+## Local time of each place
+
+Times are shown in the local time of the place they were recorded, e.g. a walk
+in New Zealand shows its New Zealand hours, followed by "(UTC+13)" when the
+zone differs from this computer's. The zone of a position comes from
+`tiles/timezones.bin`, built once (8 s, one 48 MB download, nothing sent) by:
+
+    tools/build_timezones.py
+
+It draws the time-zone boundaries of timezone-boundary-builder on a 0.05° grid
+(≈5 km); Python's zoneinfo then gives the offset at each date, summer time
+included. Photos without a recorded offset are read in the zone of their own
+GPS position. Without the file, times are shown in this computer's zone.
 
 ## Keyboard shortcuts
 
@@ -115,7 +130,8 @@ souvenir/
 └── tools/
     ├── pmtiles        tool used to download the map
     ├── edit_photo.py  set a photo's date / position
-    └── dedup.py       find and remove duplicate files
+    ├── dedup.py       find and remove duplicate files
+    └── build_timezones.py  build tiles/timezones.bin (time zone of each place)
 ```
 
 ### Source code
