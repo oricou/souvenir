@@ -118,6 +118,7 @@
       <header>
         <h2>Photos</h2>
         <span class="muted" id="photo-count"></span>
+        <button id="viewer-open" title="Plein écran, une par une (← → pour naviguer, Échap pour fermer)">⛶</button>
       </header>
       <p class="hint" id="photo-note" hidden></p>
       <div id="photo-list"></div>
@@ -130,6 +131,19 @@
       hidden
     ></div>
     <main id="map"></main>
+    <div id="viewer" hidden>
+      <div class="v-stage"></div>
+      <button class="v-prev" title="Précédente (←)">‹</button>
+      <button class="v-next" title="Suivante (→)">›</button>
+      <div class="v-top">
+        <button class="v-play" title="Défilement automatique (Espace)">▶</button>
+        <button class="v-close" title="Fermer (Échap)">✕</button>
+      </div>
+      <div class="v-bar">
+        <span class="v-caption"></span>
+        <span class="v-count"></span>
+      </div>
+    </div>
     <script src="vendor/pmtiles.js"></script>
     <script src="vendor/basemaps.js"></script>
     <script type="module" src="app.js"></script>

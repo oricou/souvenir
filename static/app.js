@@ -622,6 +622,130 @@ function showPhotoOnMap(p) {
   if (at) map.flyTo({ center: [at.lon, at.lat], zoom: Math.max(map.getZoom(), 15), duration: 800 });
 }
 
+/* ---------- Full-screen viewer: the panel's photos one by one ---------- */
+
+const VIEWER_AUTO_MS = 5000; // automatic playback: time per photo
+const viewer = { list: [], i: 0, timer: null, idle: null };
+const viewerOpen = () => !$('viewer').hidden;
+
+function openViewer() {
+  viewer.list = shownPhotoList();
+  if (!viewer.list.length) return;
+  viewer.i = Math.max(0, viewer.list.findIndex((p) => p.name === state.highlighted));
+  $('viewer').hidden = false;
+  $('viewer').requestFullscreen?.().catch(() => { /* the overlay still fills the window */ });
+  showInViewer();
+  wakeViewer();
+}
+
+function closeViewer() {
+  if (!viewerOpen()) return;
+  stopAuto();
+  $('viewer').hidden = true;
+  $('viewer').querySelector('.v-stage').textContent = ''; // stops a playing video
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  const p = viewer.list[viewer.i];
+  if (p) showPhotoOnMap(p);
+  highlightPhoto(p?.name, { scroll: true });
+}
+
+function showInViewer() {
+  const p = viewer.list[viewer.i];
+  const stage = $('viewer').querySelector('.v-stage');
+  stage.textContent = '';
+  if (p.kind === 'video') {
+    const v = document.createElement('video');
+    v.src = photoUrl(p.name);
+    v.poster = photoUrl(p.name, true);
+    v.controls = true;
+    v.autoplay = true;
+    v.onended = () => { if (viewer.timer) step(1); };
+    stage.append(v);
+  } else {
+    // The preview shows at once; the full-size original replaces it when loaded.
+    const img = document.createElement('img');
+    img.alt = '';
+    img.src = photoUrl(p.name, true);
+    stage.append(img);
+    const full = new Image();
+    full.onload = () => { if (viewer.list[viewer.i] === p) img.src = full.src; };
+    full.src = photoUrl(p.name);
+  }
+  // Load the next photo in advance.
+  const next = viewer.list[viewer.i + 1];
+  if (next && next.kind !== 'video') new Image().src = photoUrl(next.name);
+  const at = locatePhoto(p);
+  $('viewer').querySelector('.v-caption').textContent = `${fmtDate(p.t)} · ${fmtTime(p.t)}` +
+    (p.kind === 'video' ? ' · vidéo' : '') +
+    (at ? ` · ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)}${at.exact ? '' : ' (estimée)'}` : ' · hors trace');
+  $('viewer').querySelector('.v-count').textContent = `${viewer.i + 1} / ${viewer.list.length}`;
+  $('viewer').querySelector('.v-prev').hidden = viewer.i === 0;
+  $('viewer').querySelector('.v-next').hidden = viewer.i === viewer.list.length - 1;
+  highlightPhoto(p.name);
+}
+
+function step(delta) {
+  const i = viewer.i + delta;
+  if (i < 0 || i >= viewer.list.length) return stopAuto();
+  viewer.i = i;
+  showInViewer();
+  if (viewer.timer) startAuto(); // restart the countdown for the new photo
+}
+
+function startAuto() {
+  clearTimeout(viewer.timer);
+  const p = viewer.list[viewer.i];
+  // A video moves on when it ends (onended); a photo after VIEWER_AUTO_MS.
+  viewer.timer = setTimeout(() => { if (p.kind !== 'video') step(1); }, VIEWER_AUTO_MS);
+  $('viewer').querySelector('.v-play').textContent = '❚❚';
+}
+
+function stopAuto() {
+  clearTimeout(viewer.timer);
+  viewer.timer = null;
+  $('viewer').querySelector('.v-play').textContent = '▶';
+}
+
+// Controls fade out after 3 s without moving the mouse.
+function wakeViewer() {
+  $('viewer').classList.remove('idle');
+  clearTimeout(viewer.idle);
+  viewer.idle = setTimeout(() => $('viewer').classList.add('idle'), 3000);
+}
+
+$('viewer-open').onclick = openViewer;
+$('viewer').querySelector('.v-close').onclick = closeViewer;
+$('viewer').querySelector('.v-prev').onclick = (e) => { e.stopPropagation(); step(-1); };
+$('viewer').querySelector('.v-next').onclick = (e) => { e.stopPropagation(); step(1); };
+$('viewer').querySelector('.v-play').onclick = (e) => {
+  e.stopPropagation();
+  if (viewer.timer) stopAuto(); else startAuto();
+};
+$('viewer').addEventListener('mousemove', wakeViewer);
+// Click on the left / right half of a photo, or swipe, to move.
+let swipeX = null;
+$('viewer').querySelector('.v-stage').addEventListener('pointerdown', (e) => { swipeX = e.clientX; });
+$('viewer').querySelector('.v-stage').addEventListener('pointerup', (e) => {
+  if (swipeX === null || e.target.tagName === 'VIDEO') return; // video: its own controls
+  const dx = e.clientX - swipeX;
+  swipeX = null;
+  if (Math.abs(dx) > 50) step(dx < 0 ? 1 : -1);
+  else step(e.clientX < window.innerWidth / 2 ? -1 : 1);
+});
+document.addEventListener('keydown', (e) => {
+  if (!viewerOpen()) return;
+  if (e.key === 'ArrowLeft') step(-1);
+  else if (e.key === 'ArrowRight') step(1);
+  else if (e.key === ' ' && e.target.tagName !== 'VIDEO') {
+    e.preventDefault();
+    if (viewer.timer) stopAuto(); else startAuto();
+  } else if (e.key === 'Escape') closeViewer();
+  else return;
+  wakeViewer();
+});
+// Leaving full screen (Esc handled by the browser) closes the viewer too.
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) closeViewer(); });
+
 function renderLegend() {
   const scale = SCALES[colorBy()];
   const ticks = $('legend').querySelector('.ticks');
@@ -844,9 +968,17 @@ $('show-here').addEventListener('change', async () => {
 $('prev-month').onclick = () => shiftMonth(-1);
 $('next-month').onclick = () => shiftMonth(1);
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT') return;
+  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || viewerOpen()) return; // the viewer has its own keys
   if (e.key === 'ArrowLeft') stepDay(-1);
   if (e.key === 'ArrowRight') stepDay(1);
+  // Page Up / Down, Home / End scroll the photo panel, without clicking in it first.
+  const panel = $('photos');
+  if (panel.hidden) return;
+  const page = panel.clientHeight * 0.9; // keep a bit of the previous screen in view
+  const to = { PageDown: panel.scrollTop + page, PageUp: panel.scrollTop - page, Home: 0, End: panel.scrollHeight }[e.key];
+  if (to === undefined) return;
+  e.preventDefault();
+  panel.scrollTo({ top: to, behavior: 'smooth' });
 });
 
 (async () => {

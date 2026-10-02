@@ -62,7 +62,35 @@ body {
 #photo-resizer:hover, #photo-resizer.dragging { background: var(--accent); }
 #photo-resizer:hover::after, #photo-resizer.dragging::after { background: #fff; opacity: 1; }
 body.resizing { cursor: col-resize; user-select: none; }
-#photos header { margin-bottom: 12px; }
+#photos header { margin-bottom: 12px; display: flex; align-items: baseline; gap: 10px; }
+#photos header #viewer-open { margin-left: auto; padding: 0 8px; font-size: 16px; line-height: 1.6; }
+
+/* Full-screen viewer */
+#viewer {
+  position: fixed; inset: 0; z-index: 1000; background: #000; color: #fff;
+  display: flex; align-items: center; justify-content: center; user-select: none;
+}
+#viewer[hidden] { display: none; }
+#viewer .v-stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+#viewer .v-stage img, #viewer .v-stage video { max-width: 100%; max-height: 100%; object-fit: contain; }
+#viewer button {
+  position: absolute; border: none; color: #fff; background: rgba(0, 0, 0, .35);
+  border-radius: 50%; width: 48px; height: 48px; font-size: 24px; line-height: 1; padding: 0;
+  opacity: .7; transition: opacity .2s;
+}
+#viewer button:hover { opacity: 1; background: rgba(0, 0, 0, .6); }
+#viewer .v-prev { left: 16px; top: 50%; margin-top: -24px; font-size: 34px; }
+#viewer .v-next { right: 16px; top: 50%; margin-top: -24px; font-size: 34px; }
+#viewer .v-top { position: absolute; top: 16px; right: 16px; }
+#viewer .v-top button { position: static; margin-left: 8px; font-size: 18px; }
+#viewer .v-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 28px 20px 14px;
+  display: flex; justify-content: space-between; gap: 16px; font-size: 14px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, .7)); pointer-events: none;
+}
+#viewer .v-count { font-variant-numeric: tabular-nums; opacity: .8; }
+#viewer.idle button, #viewer.idle .v-bar { opacity: 0; } /* hidden after a few s without mouse move */
+#viewer.idle { cursor: none; }
 #photos h2 { margin: 0; }
 #photo-list { display: flex; flex-direction: column; gap: 14px; }
 .photo-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }
