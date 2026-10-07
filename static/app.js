@@ -36,6 +36,16 @@ const STAY_PX = 1.8;       // dot radius in px = STAY_PX × √minutes (1 h ≈ 
 
 const $ = (id) => document.getElementById(id);
 const colorBy = () => document.querySelector('input[name=colorby]:checked').value;
+/* Default colour: "Heure" for one day, "Jour" for several. Applied only when the
+   selection goes from one day to several or back, so a colour chosen by hand
+   stays while moving from day to day. */
+let lastMulti = null;
+function defaultColor() {
+  const multi = state.selected.length > 1;
+  if (multi === lastMulti) return;
+  lastMulti = multi;
+  document.querySelector(`input[name=colorby][value=${multi ? 'day' : 'time'}]`).checked = true;
+}
 const showGps = () => $('show-gps').checked;
 const showPhotos = () => $('show-photos').checked;
 const showHere = () => showPhotos() && $('show-here').checked; // "Ici": only the photos inside the map view
@@ -841,6 +851,7 @@ async function select(days, { add = false } = {}) {
     state.selected = [...days];
   }
   if (state.selected.length) state.month = keyDate(state.selected[state.selected.length - 1]);
+  defaultColor();
   render();
   await load();
   render(true);

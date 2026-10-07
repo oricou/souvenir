@@ -17,6 +17,14 @@ from contacting any other site, so neither the traces nor the viewed area leak.
 - For `tools/edit_photo.py`: ExifTool (`sudo apt install libimage-exiftool-perl`).
 - For `tools/build_timezones.py` (run once): NumPy (`sudo apt install python3-numpy`).
 
+## Install
+
+    make install    # pmtiles tool, world map (zoom 0-10, ~3.8 GB), time-zone grid
+    make france     # optional: detailed map of France (zoom 0-15, ~10 GB)
+
+Each file is only downloaded if missing. Maps come from the latest Protomaps
+build of the last week (`make france BUILD=YYYYMMDD` to choose).
+
 ## Run
 
     python3 server.py            # then open http://127.0.0.1:8000/
@@ -79,9 +87,9 @@ Two maps are stacked: a coarse `world` (zoom 0–10, 3.8 GB) and a detailed
 `france` (zoom 0–15, 9.5 GB) drawn on top from zoom 10. Either can be missing;
 the page uses whatever is in `tiles/` (restart the server after adding one).
 
-To download maps you need pmtiles, cf https://github.com/protomaps/go-pmtiles
-
-Pick a recent build date from https://build.protomaps.com/ and run:
+To update a map, delete it and run `make install` / `make france` again.
+`make install` also installs pmtiles (https://github.com/protomaps/go-pmtiles);
+by hand, pick a recent build date from https://build.protomaps.com/ and run:
 
     ./tools/pmtiles extract https://build.protomaps.com/YYYYMMDD.pmtiles \
         tiles/france-new.pmtiles --bbox=-5.8,41.2,9.8,51.3 --download-threads=8
