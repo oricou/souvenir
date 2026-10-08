@@ -32,6 +32,9 @@ install: $(PMTILES) tiles/world.pmtiles tiles/timezones.bin
 
 france: $(PMTILES) tiles/france.pmtiles
 
+service:
+	tools/install_service.sh --password --linger
+
 help:
 	@sed -n '2,8p' Makefile | sed 's/^# \{0,1\}//'
 

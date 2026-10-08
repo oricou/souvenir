@@ -6,17 +6,24 @@ tiles (tiles/*.pmtiles), the fonts, the icons and the JS libraries.
 The Content-Security-Policy forbids the browser from contacting any
 other origin, so no trace (nor the viewed area) ever leaves the machine.
 
-Usage: python3 server.py [--data DIR] [--gps DIR] [--photos DIR] [--host 127.0.0.1] [--port 8000]
+Usage: python3 server.py [--data DIR] [--gps DIR] [--photos DIR] [--host 0.0.0.0] [--port 8080]
+
+By default the site is reachable from the whole local network: protect it with
+--password (or the SOUVENIR_PASSWORD environment variable, which other users
+cannot see in `ps`), or use --host 127.0.0.1 to keep it to this computer.
 """
 
 import argparse
+import base64
 import csv
+import hmac
 import io
 import json
 import mimetypes
 import os
 import re
 import sys
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime
@@ -178,9 +185,34 @@ class Handler(SimpleHTTPRequestHandler):
     gps_dir = None
     photo_dir = None
     photo_index = None  # photos.PhotoIndex
+    password = None     # asked from other devices (HTTP Basic auth); None = open
 
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=os.path.join(ROOT, "static"), **kw)
+
+    def authorized(self):
+        """True if the request may proceed; otherwise sends 401 so the browser asks.
+        This computer is never asked; any user name is accepted, only the password counts."""
+        if not self.password or self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            return True
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Basic "):
+            try:
+                _, _, given = base64.b64decode(auth[6:]).decode("utf-8").partition(":")
+            except (ValueError, UnicodeDecodeError):
+                given = ""
+            if hmac.compare_digest(given.encode(), self.password.encode()):
+                return True
+            time.sleep(1)  # a wrong password costs a second: guessing is slow
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self.send_header("WWW-Authenticate", 'Basic realm="Souvenir", charset="UTF-8"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
+    def do_HEAD(self):
+        if self.authorized():
+            super().do_HEAD()
 
     def end_headers(self):
         if getattr(self, "revalidate", False):
@@ -207,6 +239,8 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if not self.authorized():
+            return
         url = urlparse(self.path)
         if url.path == "/api/days":
             # Days with a trace or photos (or both).
@@ -311,6 +345,19 @@ class Handler(SimpleHTTPRequestHandler):
                 length -= len(chunk)
 
 
+def lan_address():
+    """This computer's address on the local network (no packet is sent)."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))  # UDP "connect" only picks the outgoing interface
+        return s.getsockname()[0]
+    except OSError:
+        return socket.gethostname()
+    finally:
+        s.close()
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--data", default=os.path.join(ROOT, "data"),
@@ -319,10 +366,15 @@ def main():
                    help="directory with the daily YYYYMMDD.zip traces (default: DATA/gps)")
     p.add_argument("--photos", default=None,
                    help="directory with photos and videos (default: DATA/photos)")
-    p.add_argument("--host", default="127.0.0.1",
-                   help="address to listen on (default: localhost only)")
-    p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--host", default="0.0.0.0",
+                   help="address to listen on (default: all, i.e. the local network too; "
+                        "127.0.0.1 for this computer only)")
+    p.add_argument("--port", type=int, default=8080, help="default: 8080")
+    p.add_argument("--password",
+                   help="password asked from other devices (this computer is never asked); "
+                        "default: $SOUVENIR_PASSWORD, else none")
     args = p.parse_args()
+    Handler.password = args.password or os.environ.get("SOUVENIR_PASSWORD") or None
     Handler.gps_dir = os.path.abspath(args.gps or os.path.join(args.data, "gps"))
     Handler.photo_dir = os.path.abspath(args.photos or os.path.join(args.data, "photos"))
     if not os.path.isdir(Handler.gps_dir) and not os.path.isdir(Handler.photo_dir):
@@ -340,7 +392,13 @@ def main():
     Handler.photo_index = photos.PhotoIndex(
         Handler.photo_dir, PHOTO_INDEX, lambda day: get_track(Handler.gps_dir, day))
     print(f"Photos: {len(Handler.photo_index)} in {Handler.photo_dir}")
-    print(f"Open http://{args.host}:{args.port}/")
+    if args.host in ("0.0.0.0", "::", ""):
+        print(f"Open http://127.0.0.1:{args.port}/ (this computer) or "
+              f"http://{lan_address()}:{args.port}/ (other devices on the network)")
+        print("Password: asked from other devices" if Handler.password else
+              "warning: no password, every device on the network can see the site (see --password)")
+    else:
+        print(f"Open http://{args.host}:{args.port}/")
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 

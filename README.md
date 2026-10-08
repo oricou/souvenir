@@ -27,11 +27,25 @@ build of the last week (`make france BUILD=YYYYMMDD` to choose).
 
 ## Run
 
-    python3 server.py            # then open http://127.0.0.1:8000/
+    python3 server.py            # then open http://127.0.0.1:8080/
 
 Options: `--data DIR` (default `./data`), `--gps DIR` (default `DATA/gps`),
-`--photos DIR` (default `DATA/photos`), `--port`, `--host` (default
-`127.0.0.1`; use `0.0.0.0` to reach it from other devices on your LAN).
+`--photos DIR` (default `DATA/photos`), `--port` (default 8080), `--host`
+(default `0.0.0.0`: other devices on your network can open the site too, at
+this computer's address), `--password PW` (asked from other devices, never
+from this computer; any user name works; the `SOUVENIR_PASSWORD` environment
+variable does the same without showing the password in `ps`). Without a
+password, use `--host 127.0.0.1` to keep the site to this computer. The site
+is plain HTTP: on the network the password is not encrypted.
+
+To keep it running after closing the terminal, and start it at each login,
+install it as a systemd user service:
+
+    tools/install_service.sh              # --linger: also when not logged in
+    tools/install_service.sh --password   # ask a password for other devices
+    systemctl --user restart souvenir     # after changing server.py
+    journalctl --user -u souvenir -f      # its messages
+    tools/install_service.sh --uninstall
 
 ## Add days
 
@@ -159,7 +173,8 @@ souvenir/
 3. **Everything else**: serves the files in `static/` and adds a security header
    to every response that forbids the browser from contacting any other site.
    That header is what guarantees nothing goes out. It listens on
-   `127.0.0.1:8000` by default, so only this computer can reach it.
+   `0.0.0.0:8080` by default, so devices on the local network can reach it
+   (`--host 127.0.0.1` for this computer only).
 
 **`static/index.html`**: the page layout. The side panel holds the calendar,
 the filters (accuracy, network positions, time range), the colour choice
