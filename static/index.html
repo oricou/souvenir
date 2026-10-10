@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="vendor/maplibre-gl.css" />
     <link rel="stylesheet" href="style.css" />
   </head>
-  <body>
+  <body data-tab="map">
     <aside id="panel">
       <header>
         <h1>Souvenir</h1>
@@ -141,6 +141,12 @@
       hidden
     ></div>
     <main id="map"></main>
+    <!-- Phones: one panel at a time, chosen here (hidden on larger screens). -->
+    <nav id="tabs" role="tablist" aria-label="Panneaux">
+      <button role="tab" data-tab="controls" aria-label="Recherche et réglages">🔍</button>
+      <button role="tab" data-tab="photos" aria-label="Photos">📷<span id="tab-count"></span></button>
+      <button role="tab" data-tab="map" aria-label="Carte" aria-selected="true">🌍</button>
+    </nav>
     <div id="viewer" hidden>
       <div class="v-stage"></div>
       <button class="v-prev" title="Précédente (←)">‹</button>

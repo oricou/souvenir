@@ -217,7 +217,10 @@ mapReady.then(() => {
     popup.setLngLat(f.geometry.coordinates).setHTML(html).addTo(map);
   });
   map.on('mouseout', () => popup.remove());
-  map.on('click', 'photos', (e) => highlightPhoto(e.features[0].properties.name, { scroll: true }));
+  map.on('click', 'photos', (e) => {
+    if (onPhone()) setTab('photos'); // phones: show that photo in its panel
+    highlightPhoto(e.features[0].properties.name, { scroll: true });
+  });
 });
 
 /* ---------- Helpers ---------- */
@@ -526,10 +529,13 @@ function renderPhotos() {
   $('photo-count').textContent = found
     ? `recherche${here ? ' ici' : ''} · ${found.total > list.length ? `${list.length} premières / ${found.total}` : list.length}`
     : here ? `ici · ${list.length} / ${all}` : list.length ? String(list.length) : '';
-  $('photo-note').hidden = !(found ? !list.length : here && !list.length);
+  $('photo-note').hidden = list.length > 0;
   $('photo-note').textContent = found
     ? (found.error ? `Recherche indisponible : ${found.error}` : `Aucune photo trouvée${here ? ' dans cette zone de la carte' : ''}.`)
-    : 'Aucune photo de ces jours dans cette zone de la carte.';
+    : !showPhotos() ? 'Photos masquées (case « Photo » dans les filtres).'
+    : here ? 'Aucune photo de ces jours dans cette zone de la carte.'
+    : state.selected.length ? 'Aucune photo pour les jours choisis.' : 'Choisissez des jours dans le calendrier.';
+  $('tab-count').textContent = list.length ? String(list.length) : '';
   const box = $('photo-list');
   box.textContent = '';
   const manyDays = found || state.selected.length > 1;
@@ -675,6 +681,7 @@ async function runSearch() {
   $('search-note').textContent = result.error ? `Recherche indisponible : ${result.error}`
     : `${result.total} photo${plural(result.total)} — la plus proche en premier.`;
   updatePhotos();
+  if (first && onPhone()) setTab('photos'); // phones: show the results
   if (first && !showHere()) { // a new search: frame its best results
     const b = new LngLatBounds();
     for (const p of result.photos.slice(0, 50)) if (p.lat != null) b.extend([p.lon, p.lat]);
@@ -704,7 +711,21 @@ function highlightPhoto(name, { scroll = false } = {}) {
   mapReady.then(() => map.setLayoutProperty('photos', 'icon-image', photoIcon(name)));
 }
 
+/* Phones: one full-screen panel at a time, chosen with the tab bar (🔍 📷 🌍). */
+const phoneQuery = matchMedia('(max-width: 700px)');
+const onPhone = () => phoneQuery.matches;
+function setTab(tab) {
+  document.body.dataset.tab = tab;
+  for (const b of document.querySelectorAll('#tabs button')) {
+    b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+  }
+  if (tab === 'map') mapReady.then(() => map.resize());
+}
+for (const b of document.querySelectorAll('#tabs button')) b.onclick = () => setTab(b.dataset.tab);
+setTab('map');
+
 function showPhotoOnMap(p) {
+  if (onPhone()) setTab('map'); // phones: go to the map to see it
   highlightPhoto(p.name);
   const at = locatePhoto(p);
   if (at) map.flyTo({ center: [at.lon, at.lat], zoom: Math.max(map.getZoom(), 15), duration: 800 });

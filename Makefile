@@ -31,11 +31,14 @@ BUILD ?= $(shell for d in 0 1 2 3 4 5 6; do b=$$(date -d "-$$d day" +%Y%m%d); \
 	curl -sfI https://build.protomaps.com/$$b.pmtiles >/dev/null && echo $$b && break; done)
 PLANET = https://build.protomaps.com/$(BUILD).pmtiles
 
-.PHONY: install france search help
+.PHONY: install france search run help
 .DELETE_ON_ERROR:
 
+# Search queries run on this CPU (llama.cpp, see make search). To use a GPU model
+# instead: make run EMBED_API=http://HOST:8000/v1 (and SOUVENIR_API_KEY if it needs a key).
+EMBED_API ?=
 run:
-	SOUVENIR_API_KEY=toto python3 server.py --embed-api http://192.168.0.9:8000/v1
+	python3 -u server.py $(if $(EMBED_API),--embed-api $(EMBED_API))
 
 install: $(PMTILES) tiles/world.pmtiles tiles/timezones.bin
 	@echo "Ready. Start the site with: python3 server.py"

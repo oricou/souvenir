@@ -65,18 +65,20 @@ def locate(t, points):
 
 
 def _exif(path):
-    """(utc datetime, lat, lon, width, height) from a photo's EXIF; None if unknown.
+    """(utc datetime, lat, lon, width, height, offset) from a photo's EXIF; None if
+    unknown. offset: minutes from UTC of the camera's clock, where known.
 
     width/height are as displayed, i.e. swapped for photos rotated by 90°.
     """
+    unknown = (None,) * 6  # unreadable file, or no Pillow: the PXL_ name may still date it
     if Image is None:
-        return None, None, None, None, None
+        return unknown
     try:
         with Image.open(path) as im:
             ex = im.getexif()
             w, h = im.size
     except Exception:
-        return None, None, None, None, None
+        return unknown
     if ex.get(0x0112) in (5, 6, 7, 8):  # Orientation: rotated 90° either way
         w, h = h, w
     sub = ex.get_ifd(0x8769)  # Exif IFD

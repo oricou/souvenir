@@ -180,15 +180,40 @@ button:hover { background: var(--hover); }
 .pop-img { display: block; width: 160px; height: auto; border-radius: 4px; margin-bottom: 4px; }
 .pop-note { color: #6b7280; }
 
+#tabs { display: none; }
+
+/* Phones: each panel full screen, one at a time, chosen with the tab bar at the bottom
+   (body[data-tab] is set by app.js: controls / photos / map). */
 @media (max-width: 700px) {
-  body { flex-direction: column-reverse; }
-  #panel { width: 100%; max-height: 45vh; border-right: none; border-top: 1px solid var(--line); }
-  #photos { width: 100%; max-height: 30vh; border-right: none; border-top: 1px solid var(--line); }
-  #photo-list { flex-direction: row; overflow-x: auto; }
-  #photos[style] { width: 100% !important; }
-  #photo-resizer { display: none; }
-  .photo, .photo-pair { flex: none; width: 160px; }
-  .photo-pair { width: 328px; }
-  .photo-pair .photo { width: auto; }
-  #map { flex: 1; }
+  :root { --tabs-h: calc(56px + env(safe-area-inset-bottom, 0px)); }
+  body { display: block; height: 100dvh; overflow: hidden; }
+  #panel, #photos, #map {
+    position: fixed; left: 0; right: 0; top: 0; bottom: var(--tabs-h);
+    width: auto !important; max-height: none; border: none;
+  }
+  #panel, #photos { overflow-y: auto; }
+  #photo-resizer { display: none !important; }
+  body:not([data-tab="controls"]) #panel,
+  body:not([data-tab="photos"]) #photos,
+  body:not([data-tab="map"]) #map { visibility: hidden; pointer-events: none; }
+  body[data-tab="photos"] #photos[hidden] { display: block; } /* shows "no photo" too */
+  #tabs {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+    height: var(--tabs-h); padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: var(--bg); border-top: 1px solid var(--line);
+  }
+  #tabs button {
+    flex: 1; border: none; border-radius: 0; font-size: 26px; position: relative;
+    opacity: .55; border-top: 3px solid transparent;
+  }
+  /* The tab of the panel shown (from body[data-tab], so it is right even before the script runs). */
+  body[data-tab="controls"] #tabs [data-tab="controls"],
+  body[data-tab="photos"] #tabs [data-tab="photos"],
+  body[data-tab="map"] #tabs [data-tab="map"] { opacity: 1; border-top-color: var(--accent); background: var(--hover); }
+  .cal .hint { display: none; } /* Ctrl+clic, ⇧+clic, ← →: no keyboard on a phone */
+  #tab-count {
+    position: absolute; top: 6px; left: 50%; margin-left: 12px; min-width: 18px; padding: 0 5px;
+    border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; line-height: 18px;
+  }
+  #tab-count:empty { display: none; }
 }
