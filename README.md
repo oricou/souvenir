@@ -15,12 +15,14 @@ from contacting any other site, so neither the traces nor the viewed area leak.
   previews. Without them, times come from `PXL_…` file names and full images
   are served.
 - For `tools/edit_photo.py`: ExifTool (`sudo apt install libimage-exiftool-perl`).
-- For `tools/build_timezones.py` (run once): NumPy (`sudo apt install python3-numpy`).
+- For `tools/build_timezones.py` (run once) and for the search: NumPy
+  (`sudo apt install python3-numpy`).
 
 ## Install
 
     make install    # pmtiles tool, world map (zoom 0-10, ~3.8 GB), time-zone grid
     make france     # optional: detailed map of France (zoom 0-15, ~10 GB)
+    make search     # optional: CPU search model (llama.cpp + 1.8 GB), see Search
 
 Each file is only downloaded if missing. Maps come from the latest Protomaps
 build of the last week (`make france BUILD=YYYYMMDD` to choose).
@@ -83,6 +85,35 @@ It draws the time-zone boundaries of timezone-boundary-builder on a 0.05° grid
 included. Photos without a recorded offset are read in the zone of their own
 GPS position. Without the file, times are shown in this computer's zone.
 
+## Search
+
+The box under the title finds photos by meaning, in French or English
+("un bateau", "plage au coucher du soleil", "quelqu'un qui fait des travaux"),
+across all days, best match first; with "ici", only those in the visible area.
+
+Photos and queries are turned into vectors by the same multimodal embedding
+model (Qwen3-VL-Embedding-2B) and compared. Two steps:
+
+1. Encode the photos, once (then again after adding photos: only new ones are
+   done), on a computer with a GPU (~0.1 s per photo with an RTX 4060 Ti):
+
+       vllm serve Qwen/Qwen3-VL-Embedding-2B --runner pooling --max-model-len 1024
+       tools/embed_photos.py [--api http://HOST:8000/v1] [--api-key KEY]
+
+   This writes `cache/embeddings.json` and `cache/embeddings.f16`. vLLM can
+   then be stopped: the GPU is not needed to search.
+
+2. Search: `make search` installs llama.cpp (CPU build) and the same model in
+   8 bits (1.8 GB, checksums verified). When photo vectors exist, the server
+   starts it as a child process (127.0.0.1 only, stopped with the server) and
+   encodes each query on the CPU: ~0.4 s per search, ~2 GB of RAM, no GPU.
+   To use another API instead (e.g. vLLM on the GPU): `--embed-api URL`
+   (key: `--embed-key` or `SOUVENIR_API_KEY`).
+
+The query is built exactly as vLLM builds it (chat template without the final
+"assistant" line, sent as token ids), so CPU and GPU vectors agree (measured
+similarity 0.997-0.999, same results). Nothing leaves your network.
+
 ## Keyboard shortcuts
 
 | Key | Action |
@@ -137,6 +168,9 @@ files or third-party libraries.
 souvenir/
 ├── server.py          the server
 ├── photos.py          photo times, positions and previews
+├── search.py          search photos by meaning (vectors, local llama.cpp)
+├── models/            the search model for llama.cpp (make search)
+├── timezones.py       time zone of a position
 ├── README.md          this file
 ├── data/
 │   ├── gps/           the traces, one zip per day
@@ -151,8 +185,10 @@ souvenir/
 ├── tiles/             the maps: world and France (downloaded)
 └── tools/
     ├── pmtiles        tool used to download the map
+    ├── llama/         llama.cpp CPU build (make search)
     ├── edit_photo.py  set a photo's date / position
     ├── dedup.py       find and remove duplicate files
+    ├── embed_photos.py  turn photos into vectors for the search
     └── build_timezones.py  build tiles/timezones.bin (time zone of each place)
 ```
 

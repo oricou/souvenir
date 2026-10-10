@@ -15,6 +15,7 @@ cannot see in `ps`), or use --host 127.0.0.1 to keep it to this computer.
 
 import argparse
 import base64
+import signal
 import csv
 import hmac
 import io
@@ -32,6 +33,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 import photos
+import search
 import timezones
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -186,6 +188,7 @@ class Handler(SimpleHTTPRequestHandler):
     photo_dir = None
     photo_index = None  # photos.PhotoIndex
     password = None     # asked from other devices (HTTP Basic auth); None = open
+    search = None       # search.Search: photos by meaning
 
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=os.path.join(ROOT, "static"), **kw)
@@ -253,6 +256,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"day": day, "points": points})
         if url.path == "/api/maps":
             return self.send_json(list_maps())
+        if url.path == "/api/search":
+            return self.send_search(parse_qs(url.query))
         if url.path == "/api/photos":
             query = parse_qs(url.query)
             days = [d for d in query.get("days", [""])[0].split(",") if d]
@@ -275,6 +280,34 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_ranged(os.path.join(TILES_DIR, m.group(1) + ".pmtiles"))
         self.revalidate = True
         return super().do_GET()
+
+    def send_search(self, query):
+        """Photos matching ?q= (by meaning), best first; ?bbox= keeps those in an area
+        ("ici"), ?days= those of some days, ?limit= the number returned."""
+        text = query.get("q", [""])[0].strip()
+        if not text:
+            return self.send_json({"total": 0, "photos": []})
+        try:
+            ranked = self.search.ranked(text)
+        except search.SearchError as e:
+            return self.send_json({"error": str(e), "total": 0, "photos": []})
+        info = self.photo_index.photos_named([n for n, _ in ranked])
+        found = [{**info[n], "score": s} for n, s in ranked if n in info]
+        if "days" in query:
+            days = set(query["days"][0].split(","))
+            found = [p for p in found if p["day"] in days]
+        if "bbox" in query:
+            try:
+                w, s, e, n = map(float, query["bbox"][0].split(","))
+            except ValueError:
+                return self.send_error(HTTPStatus.BAD_REQUEST, "bbox=west,south,east,north")
+            found = [p for p in found if p["lat"] is not None
+                     and s <= p["lat"] <= n and w <= p["lon"] <= e]
+        try:
+            limit = max(1, min(1000, int(query.get("limit", ["200"])[0])))
+        except ValueError:
+            limit = 200
+        return self.send_json({"total": len(found), "photos": found[:limit]})
 
     def send_photo(self, name, thumb):
         # Only names from the listing: no path tricks can reach other files.
@@ -373,7 +406,13 @@ def main():
     p.add_argument("--password",
                    help="password asked from other devices (this computer is never asked); "
                         "default: $SOUVENIR_PASSWORD, else none")
+    p.add_argument("--embed-api",
+                   help="OpenAI-compatible API of the embedding model used for search "
+                        "(e.g. vLLM on a GPU); default: llama.cpp on this CPU (make search)")
+    p.add_argument("--embed-key",
+                   help="key of that API if it needs one (default: $SOUVENIR_API_KEY)")
     args = p.parse_args()
+    Handler.search = search.Search(args.embed_api, args.embed_key or os.environ.get("SOUVENIR_API_KEY"))
     Handler.password = args.password or os.environ.get("SOUVENIR_PASSWORD") or None
     Handler.gps_dir = os.path.abspath(args.gps or os.path.join(args.data, "gps"))
     Handler.photo_dir = os.path.abspath(args.photos or os.path.join(args.data, "photos"))
@@ -392,6 +431,11 @@ def main():
     Handler.photo_index = photos.PhotoIndex(
         Handler.photo_dir, PHOTO_INDEX, lambda day: get_track(Handler.gps_dir, day))
     print(f"Photos: {len(Handler.photo_index)} in {Handler.photo_dir}")
+    # systemd stops services with SIGTERM: exit normally, so the search model
+    # (a child process) is stopped too.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    Handler.search.start()
+    print(f"Search: {Handler.search.status()}")
     if args.host in ("0.0.0.0", "::", ""):
         print(f"Open http://127.0.0.1:{args.port}/ (this computer) or "
               f"http://{lan_address()}:{args.port}/ (other devices on the network)")

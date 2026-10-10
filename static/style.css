@@ -107,6 +107,12 @@ h1 { font-size: 20px; margin: 0; }
 h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
 .muted { color: var(--muted); font-size: 12px; }
 .hint { color: var(--muted); font-size: 11px; margin: 6px 0 0; }
+.search input {
+  width: 100%; font: inherit; color: inherit; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px;
+}
+.search input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.search .hint { margin-top: 4px; }
 .range-buttons { display: flex; gap: 6px; margin-top: 8px; }
 .range-buttons button, .range-buttons select { flex: 1; padding: 4px 0; }
 .range-buttons select {

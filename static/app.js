@@ -58,6 +58,7 @@ const state = {
   photos: new globalThis.Map(), // day -> [{name, kind, t, day, lat, lon, exact, w, h}]
   photoKey: null,               // what the photo panel currently shows
   here: { total: 0, photos: [] }, // "ici": the selected days' photos inside the view, from the server
+  search: null,                 // {q, total, photos, error} while a search is shown, else null
   highlighted: null,            // name of the photo outlined in the panel / enlarged on the map
   month: null,            // Date of the first day of the shown month
 };
@@ -496,7 +497,9 @@ function render(fit = false) {
 /* ---------- Photos ---------- */
 
 const selectedPhotos = () => state.selected.flatMap((d) => state.photos.get(d) || []).sort((a, b) => a.t - b.t);
-const shownPhotoList = () => !showPhotos() ? [] : showHere() ? state.here.photos : selectedPhotos();
+const shownPhotoList = () => !showPhotos() ? []
+  : state.search ? state.search.photos // all days, best match first ("ici": only in view)
+  : showHere() ? state.here.photos : selectedPhotos();
 const fmtShortDay = (k) => keyDate(k).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
 const plural = (n) => n > 1 ? 's' : '';
 
@@ -514,18 +517,22 @@ function photoFeatures() {
 /** Fill the photo panel; rebuilt only when the photos or their positions change. */
 function renderPhotos() {
   const list = shownPhotoList();
-  const here = showHere();
-  const key = (here ? 'ici:' : '') + list.map((p) => p.name).join('|');
+  const here = showHere(), found = state.search;
+  const key = (found ? `search:${found.q}:` : '') + (here ? 'ici:' : '') + list.map((p) => p.name).join('|');
   if (key === state.photoKey) return;
   state.photoKey = key;
-  const all = !showPhotos() ? 0 : here ? state.here.total : selectedPhotos().length;
-  $('photos').hidden = $('photo-resizer').hidden = !all;
-  $('photo-count').textContent = here ? `ici · ${list.length} / ${all}` : list.length ? String(list.length) : '';
-  $('photo-note').hidden = !here || list.length > 0;
-  $('photo-note').textContent = 'Aucune photo de ces jours dans cette zone de la carte.';
+  const all = !showPhotos() ? 0 : found ? found.total : here ? state.here.total : selectedPhotos().length;
+  $('photos').hidden = $('photo-resizer').hidden = !all && !found;
+  $('photo-count').textContent = found
+    ? `recherche${here ? ' ici' : ''} · ${found.total > list.length ? `${list.length} premières / ${found.total}` : list.length}`
+    : here ? `ici · ${list.length} / ${all}` : list.length ? String(list.length) : '';
+  $('photo-note').hidden = !(found ? !list.length : here && !list.length);
+  $('photo-note').textContent = found
+    ? (found.error ? `Recherche indisponible : ${found.error}` : `Aucune photo trouvée${here ? ' dans cette zone de la carte' : ''}.`)
+    : 'Aucune photo de ces jours dans cette zone de la carte.';
   const box = $('photo-list');
   box.textContent = '';
-  const manyDays = state.selected.length > 1;
+  const manyDays = found || state.selected.length > 1;
   // Two portrait photos in a row share a line, to save space.
   const portrait = (p) => p && p.h > p.w;
   let row = null;
@@ -617,6 +624,7 @@ $('photo-resizer').addEventListener('dblclick', () => {
    is never sent to show the few taken here). Asked again when the map stops moving. */
 let hereRequest = null;
 async function loadHere() {
+  if (state.search) return runSearch(); // a search shown: it is filtered on the view instead
   if (!showHere()) return;
   hereRequest?.abort();
   hereRequest = new AbortController();
@@ -633,6 +641,51 @@ async function loadHere() {
   updatePhotos();
 }
 map.on('moveend', loadHere);
+
+/* Search by meaning (server: /api/search, vectors from tools/embed_photos.py): the
+   results replace the photo list, best match first, all days; with "ici", only those
+   in the view (asked again when the map moves). An empty box goes back to the list. */
+let searchRequest = null;
+async function runSearch() {
+  const q = $('search').value.trim();
+  searchRequest?.abort();
+  if (!q) {
+    state.search = null;
+    $('search-note').hidden = true;
+    return updatePhotos();
+  }
+  searchRequest = new AbortController();
+  let url = `api/search?q=${encodeURIComponent(q)}&limit=300`;
+  if (showHere()) {
+    const b = map.getBounds();
+    url += '&bbox=' + [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((v) => v.toFixed(5)).join(',');
+  }
+  $('search-note').hidden = false;
+  $('search-note').textContent = 'Recherche…';
+  let result;
+  try {
+    const r = await fetch(url, { signal: searchRequest.signal });
+    result = r.ok ? await r.json() : { error: `erreur ${r.status}`, total: 0, photos: [] };
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    result = { error: String(e), total: 0, photos: [] };
+  }
+  const first = !state.search || state.search.q !== q;
+  state.search = { q, ...result };
+  $('search-note').textContent = result.error ? `Recherche indisponible : ${result.error}`
+    : `${result.total} photo${plural(result.total)} — la plus proche en premier.`;
+  updatePhotos();
+  if (first && !showHere()) { // a new search: frame its best results
+    const b = new LngLatBounds();
+    for (const p of result.photos.slice(0, 50)) if (p.lat != null) b.extend([p.lon, p.lat]);
+    if (!b.isEmpty()) map.fitBounds(b, { padding: 60, maxZoom: 15, duration: 600 });
+  }
+}
+$('search-form').addEventListener('submit', (e) => { e.preventDefault(); runSearch(); });
+$('search').addEventListener('search', runSearch); // the ✕ of the box (and Enter)
+$('search').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { $('search').value = ''; runSearch(); }
+});
 
 /** Refresh only the photo squares and panel (cheaper than render()). */
 function updatePhotos() {
