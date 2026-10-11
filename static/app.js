@@ -36,12 +36,12 @@ const STAY_PX = 1.8;       // dot radius in px = STAY_PX × √minutes (1 h ≈ 
 
 const $ = (id) => document.getElementById(id);
 const colorBy = () => document.querySelector('input[name=colorby]:checked').value;
-/* Default colour: "Heure" for one day, "Jour" for several. Applied only when the
-   selection goes from one day to several or back, so a colour chosen by hand
-   stays while moving from day to day. */
+/* Default colour: "Heure" for one day, "Jour" for several days or for all dates (the
+   colours of the photo squares). Applied only when that changes (one day <-> several or
+   all), so a colour chosen by hand stays while moving from day to day. */
 let lastMulti = null;
 function defaultColor() {
-  const multi = state.selected.length > 1;
+  const multi = state.selected.length !== 1; // several days, or none ("Dates : toutes"): Jour
   if (multi === lastMulti) return;
   lastMulti = multi;
   document.querySelector(`input[name=colorby][value=${multi ? 'day' : 'time'}]`).checked = true;
@@ -54,11 +54,14 @@ const state = {
   days: [],               // days with a trace or photos, 'YYYYMMDD', sorted
   selected: [],           // selected days, in selection order
   anchor: null,           // last clicked day: start of a ⇧+click range, reference for "Semaine"
+  datesKept: [],          // the days selected when "Dates" was folded, given back when unfolded
   tracks: new globalThis.Map(), // day -> points
   photos: new globalThis.Map(), // day -> [{name, kind, t, day, lat, lon, exact, w, h}]
   photoKey: null,               // what the photo panel currently shows
   here: { total: 0, photos: [] }, // "ici": the selected days' photos inside the view, from the server
   search: null,                 // {q, total, photos, error} while a search is shown, else null
+  person: null,                 // {name, total, photos} while a person's photos are shown, else null
+  people: { available: false, people: [] }, // names given to faces (api/people)
   highlighted: null,            // name of the photo outlined in the panel / enlarged on the map
   month: null,            // Date of the first day of the shown month
 };
@@ -500,8 +503,22 @@ function render(fit = false) {
 /* ---------- Photos ---------- */
 
 const selectedPhotos = () => state.selected.flatMap((d) => state.photos.get(d) || []).sort((a, b) => a.t - b.t);
+const inView = (p) => p.lat != null && map.getBounds().contains([p.lon, p.lat]);
+/** The shown person's photos taken on the days selected in the calendar (all if none is). */
+const personPhotos = () => {
+  const days = new Set(state.selected);
+  return (state.person?.photos || []).filter((p) => !days.size || days.has(p.day));
+};
+/** The selected days, in words: "le 12 oct. 2025", "37 jours, du 1 janv. 2025 au 31 déc. 2025". */
+function daysLabel() {
+  const days = [...state.selected].sort();
+  if (!days.length) return 'tous les jours'; // nothing selected: no date filter
+  if (days.length === 1) return `le ${fmtShortDay(days[0])}`;
+  return `${days.length} jours, du ${fmtShortDay(days[0])} au ${fmtShortDay(days[days.length - 1])}`;
+}
 const shownPhotoList = () => !showPhotos() ? []
   : state.search ? state.search.photos // all days, best match first ("ici": only in view)
+  : state.person ? personPhotos().filter((p) => !showHere() || inView(p)) // by date
   : showHere() ? state.here.photos : selectedPhotos();
 const fmtShortDay = (k) => keyDate(k).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
 const plural = (n) => n > 1 ? 's' : '';
@@ -520,25 +537,31 @@ function photoFeatures() {
 /** Fill the photo panel; rebuilt only when the photos or their positions change. */
 function renderPhotos() {
   const list = shownPhotoList();
-  const here = showHere(), found = state.search;
-  const key = (found ? `search:${found.q}:` : '') + (here ? 'ici:' : '') + list.map((p) => p.name).join('|');
+  const here = showHere(), found = state.search, person = state.person;
+  const key = (found ? `search:${found.q}:` : '') + (person ? `person:${person.name}:` : '') + (here ? 'ici:' : '') +
+    list.map((p) => p.name + (p.people || []).join()).join('|');
   if (key === state.photoKey) return;
   state.photoKey = key;
-  const all = !showPhotos() ? 0 : found ? found.total : here ? state.here.total : selectedPhotos().length;
-  $('photos').hidden = $('photo-resizer').hidden = !all && !found;
+  const all = !showPhotos() ? 0 : found ? found.total : person ? personPhotos().length : here ? state.here.total : selectedPhotos().length;
+  $('photos').hidden = $('photo-resizer').hidden = !all && !found && !person;
   $('photo-count').textContent = found
     ? `recherche${here ? ' ici' : ''} · ${found.total > list.length ? `${list.length} premières / ${found.total}` : list.length}`
+    : person ? `${person.name}${here ? ' ici' : ''} · ${list.length}`
     : here ? `ici · ${list.length} / ${all}` : list.length ? String(list.length) : '';
   $('photo-note').hidden = list.length > 0;
   $('photo-note').textContent = found
-    ? (found.error ? `Recherche indisponible : ${found.error}` : `Aucune photo trouvée${here ? ' dans cette zone de la carte' : ''}.`)
+    ? (found.error ? `Recherche indisponible : ${found.error}` : `Aucune photo trouvée ${daysLabel()}${here ? ' dans cette zone de la carte' : ''}.`)
+    : person ? `Aucune photo de ${person.name} ${daysLabel()}${here ? ' dans cette zone de la carte' : ''} (${person.total} en tout).`
     : !showPhotos() ? 'Photos masquées (case « Photo » dans les filtres).'
     : here ? 'Aucune photo de ces jours dans cette zone de la carte.'
-    : state.selected.length ? 'Aucune photo pour les jours choisis.' : 'Choisissez des jours dans le calendrier.';
+    : state.selected.length ? 'Aucune photo pour les jours choisis.'
+    : 'Toutes les dates : cherchez des photos ou choisissez une personne (ou dépliez « Dates »).';
   $('tab-count').textContent = list.length ? String(list.length) : '';
+  $('tab-here').hidden = !here; // phones: 🎯 on the 🔍 tab while "ici" filters the photos
+  showAliasForm();
   const box = $('photo-list');
   box.textContent = '';
-  const manyDays = found || state.selected.length > 1;
+  const manyDays = found || person || state.selected.length > 1;
   // Two portrait photos in a row share a line, to save space.
   const portrait = (p) => p && p.h > p.w;
   let row = null;
@@ -579,6 +602,12 @@ function renderPhotos() {
     open.textContent = locatePhoto(p) ? 'ouvrir ↗' : 'hors trace · ouvrir ↗';
     cap.append(when, open);
     fig.append(media, cap);
+    if (p.people?.length) {
+      const who = document.createElement('div');
+      who.className = 'who';
+      who.textContent = '👤 ' + p.people.join(', ');
+      fig.append(who);
+    }
     if (row) {
       row.append(fig);
       row = null;
@@ -655,13 +684,14 @@ let searchRequest = null;
 async function runSearch() {
   const q = $('search').value.trim();
   searchRequest?.abort();
+  if (q && state.person) { state.person = null; renderPeople(); }
   if (!q) {
     state.search = null;
     $('search-note').hidden = true;
     return updatePhotos();
   }
   searchRequest = new AbortController();
-  let url = `api/search?q=${encodeURIComponent(q)}&limit=300`;
+  let url = `api/search?q=${encodeURIComponent(q)}&limit=300&days=${[...state.selected].sort().join(',')}`;
   if (showHere()) {
     const b = map.getBounds();
     url += '&bbox=' + [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((v) => v.toFixed(5)).join(',');
@@ -678,8 +708,12 @@ async function runSearch() {
   }
   const first = !state.search || state.search.q !== q;
   state.search = { q, ...result };
+  // How the query was understood: "Laurence et Paul · « à vélo » — 12 photos".
+  const who = result.names?.length ? `👤 ${result.names.join(' et ')}${result.rest ? ` · « ${result.rest} »` : ''} — ` : '';
   $('search-note').textContent = result.error ? `Recherche indisponible : ${result.error}`
-    : `${result.total} photo${plural(result.total)} — la plus proche en premier.`;
+    : `${who}${result.total} photo${plural(result.total)} (${daysLabel()})` +
+      (result.names?.length && !result.rest ? ', par date.' : ' — la plus proche en premier.') +
+      (result.warning ? ` (${result.warning})` : '');
   updatePhotos();
   if (first && onPhone()) setTab('photos'); // phones: show the results
   if (first && !showHere()) { // a new search: frame its best results
@@ -792,7 +826,9 @@ function showInViewer() {
       thumb.alt = '';
       thumb.src = photoUrl(p.name, true);
       stage.append(thumb);
-      full.decode().then(() => { if (viewer.list[viewer.i] === p) thumb.replaceWith(full); }, () => {});
+      full.decode().then(() => {
+        if (viewer.list[viewer.i] === p) { thumb.replaceWith(full); drawFaces(); }
+      }, () => {});
     }
   }
   // Keep the neighbours ready (next two, previous one) and forget the others.
@@ -804,11 +840,215 @@ function showInViewer() {
   const at = locatePhoto(p);
   $('viewer').querySelector('.v-caption').textContent = `${fmtDate(p.t, p.off)} · ${fmtTime(p.t, p.off)}${tzLabel(p.t, p.off)}` +
     (p.kind === 'video' ? ' · vidéo' : '') +
-    (at ? ` · ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)}${at.exact ? '' : ' (estimée)'}` : ' · hors trace');
+    (at ? ` · ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)}${at.exact ? '' : ' (estimée)'}` : ' · hors trace') +
+    (p.people?.length ? ` · 👤 ${p.people.join(', ')}` : '');
   $('viewer').querySelector('.v-count').textContent = `${viewer.i + 1} / ${viewer.list.length}`;
   $('viewer').querySelector('.v-prev').hidden = viewer.i === 0;
   $('viewer').querySelector('.v-next').hidden = viewer.i === viewer.list.length - 1;
   highlightPhoto(p.name);
+  hideAsk();
+  drawFaces();
+}
+
+/* ---------- People: name the faces in the slideshow (👤 or f) ---------- */
+
+const FACES_KEY = 'souvenir.faces';
+const facesCache = new globalThis.Map(); // photo name -> faces (api/faces)
+viewer.faces = (() => { try { return localStorage.getItem(FACES_KEY) === '1'; } catch { return false; } })();
+
+/** Boxes over the faces of the photo shown: white unknown, yellow recognised, green named by you. */
+async function drawFaces() {
+  const layer = $('viewer').querySelector('.v-faces-layer');
+  $('viewer').querySelector('.v-faces').classList.toggle('on', viewer.faces);
+  $('viewer').querySelector('.v-faces').hidden = !state.people.available;
+  layer.textContent = '';
+  const p = viewer.list[viewer.i];
+  if (!viewer.faces || !state.people.available || !p || p.kind === 'video') return;
+  if (!facesCache.has(p.name)) {
+    const r = await fetch('api/faces?photo=' + encodeURIComponent(p.name));
+    facesCache.set(p.name, r.ok ? await r.json() : []);
+    if (viewer.list[viewer.i] !== p) return; // moved on meanwhile
+  }
+  const img = $('viewer').querySelector('.v-stage img');
+  if (!img) return;
+  if (!img.complete) { img.addEventListener('load', drawFaces, { once: true }); return; }
+  layer.textContent = '';
+  const r = img.getBoundingClientRect(), v = $('viewer').getBoundingClientRect();
+  for (const f of facesCache.get(p.name)) {
+    const [x, y, w, h] = f.box;
+    const box = document.createElement('div');
+    box.className = 'face ' + (f.kind || 'unknown');
+    Object.assign(box.style, {
+      left: `${r.left - v.left + x * r.width}px`, top: `${r.top - v.top + y * r.height}px`,
+      width: `${w * r.width}px`, height: `${h * r.height}px`,
+    });
+    const label = document.createElement('span');
+    label.textContent = f.name ? f.name + (f.kind === 'auto' ? ' ?' : '') : '?';
+    box.append(label);
+    box.title = f.name ? `${f.name} (${f.kind === 'auto' ? `reconnu, ${Math.round(f.similarity * 100)} %` : 'nommé'})` : 'Qui est-ce ?';
+    box.onclick = (e) => { e.stopPropagation(); askFace(p, f); };
+    box.onpointerup = (e) => e.stopPropagation(); // not a tap to change photo
+    layer.append(box);
+  }
+}
+
+function toggleFaces() {
+  viewer.faces = !viewer.faces;
+  try { localStorage.setItem(FACES_KEY, viewer.faces ? '1' : '0'); } catch { /* ignore */ }
+  hideAsk();
+  drawFaces();
+}
+
+/** "Qui est-ce ?": name a face, confirm its name, or say it is not that person. */
+let asking = null; // {p, f} while the form is open
+function askFace(p, f) {
+  const form = $('viewer').querySelector('.v-ask');
+  asking = { p, f };
+  stopAuto();
+  form.who.value = f.name || '';
+  const not = form.querySelector('.v-ask-not');
+  not.hidden = !f.name;
+  not.textContent = f.name ? `Pas ${f.name}` : '';
+  form.hidden = false;
+  form.who.focus();
+  form.who.select();
+}
+function hideAsk() {
+  $('viewer').querySelector('.v-ask').hidden = true;
+  asking = null;
+}
+async function answerFace(kind, name) {
+  if (!asking || !name) return hideAsk();
+  const { p, f } = asking;
+  hideAsk();
+  const r = await fetch(`api/people/${kind}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ photo: p.name, face: f.face, name }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) return alert(`Impossible : ${data.error || r.status}`);
+  facesCache.clear(); // one answer can change who is recognised in many photos
+  facesCache.set(p.name, data.faces);
+  p.people = [...new Set(data.faces.filter((x) => x.name).map((x) => x.name))].sort();
+  if (viewer.list[viewer.i] === p) showInViewer();
+  await loadPeople();
+  if (state.person) await showPerson(state.person.name, { keepView: true });
+}
+{
+  const form = $('viewer').querySelector('.v-ask');
+  form.addEventListener('submit', (e) => { e.preventDefault(); answerFace('name', form.who.value.trim()); });
+  form.querySelector('.v-ask-not').onclick = () => answerFace('refuse', asking?.f.name);
+  form.querySelector('.v-ask-cancel').onclick = hideAsk;
+  form.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); hideAsk(); }
+    e.stopPropagation(); // typing a name must not drive the slideshow
+  });
+  form.addEventListener('pointerup', (e) => e.stopPropagation());
+  $('viewer').querySelector('.v-faces').onclick = (e) => { e.stopPropagation(); toggleFaces(); };
+  window.addEventListener('resize', () => { if (viewerOpen()) drawFaces(); });
+}
+
+/* The "Personnes" section: each name, its face and number of photos; a tap shows them. */
+async function loadPeople() { // counts for the selected days (all, if none is)
+  try {
+    const r = await fetch('api/people?days=' + [...state.selected].sort().join(','));
+    if (r.ok) state.people = await r.json();
+  } catch { /* the server is restarting: keep what we have */ }
+  renderPeople();
+}
+function renderPeople() {
+  const { available, people } = state.people;
+  $('people-section').hidden = !available;
+  const box = $('people');
+  box.textContent = '';
+  $('people-names').textContent = '';
+  for (const person of people) {
+    for (const n of [person.name, ...(person.aliases || [])]) $('people-names').append(new Option(n));
+    const b = document.createElement('button');
+    b.className = (state.person?.name === person.name ? 'on' : '') + (person.photos ? '' : ' none');
+    if (person.cover) {
+      const img = document.createElement('img');
+      img.alt = '';
+      img.src = `face?photo=${encodeURIComponent(person.cover.photo)}&face=${person.cover.face}`;
+      b.append(img);
+    }
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = person.photos;
+    b.append(person.name, n);
+    b.title = `Les photos de ${person.name}` + (person.aliases?.length ? ` (aussi : ${person.aliases.join(', ')})` : '') +
+      (state.selected.length ? ` — ${person.photos} photo${plural(person.photos)} sur ces jours, ${person.total} en tout`
+                             : ` — ${person.total} photo${plural(person.total)}`);
+    b.onclick = () => (state.person?.name === person.name ? leavePerson() : showPerson(person.name));
+    box.append(b);
+  }
+  if (available && !people.length) {
+    box.textContent = 'Nommez des visages dans le diaporama (bouton 👤).';
+    box.className = 'people hint';
+  } else {
+    box.className = 'people';
+  }
+}
+async function showPerson(name, { keepView = false } = {}) {
+  const r = await fetch('api/people/photos?name=' + encodeURIComponent(name));
+  if (!r.ok) return;
+  state.person = await r.json();
+  if (state.search) { state.search = null; $('search').value = ''; $('search-note').hidden = true; }
+  renderPeople();
+  updatePhotos();
+  if (keepView) return;
+  if (onPhone()) setTab('photos');
+  if (!showHere()) {
+    const b = new LngLatBounds();
+    for (const p of personPhotos()) if (p.lat != null) b.extend([p.lon, p.lat]);
+    if (!b.isEmpty()) map.fitBounds(b, { padding: 60, maxZoom: 15, duration: 600 });
+  }
+}
+/* In a person's view: their other names, comma separated ("Laurence Masso, petite nièce"),
+   used to name faces and in the search. */
+let aliasFor = null; // whose aliases the form shows
+function showAliasForm() {
+  const form = $('alias-form'), person = state.person;
+  form.hidden = !person;
+  if (!person || aliasFor === person.name) return; // keep what is being typed
+  aliasFor = person.name;
+  const known = state.people.people.find((p) => p.name === person.name);
+  form.aliases.value = (known?.aliases || []).join(', ');
+  $('alias-note').textContent = '';
+}
+$('alias-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const name = state.person?.name;
+  if (!name) return;
+  const aliases = $('alias-form').aliases.value.split(',').map((a) => a.trim()).filter(Boolean);
+  const r = await fetch('api/people/aliases', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, aliases }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { $('alias-note').textContent = `Impossible : ${data.error || r.status}`; return; }
+  $('alias-form').aliases.value = data.aliases.join(', ');
+  $('alias-note').textContent = data.aliases.length ? 'Enregistré : la recherche les reconnaît.' : 'Aucun autre nom.';
+  await loadPeople();
+});
+
+/* Click the "Personnes" title to fold / unfold the list (remembered in this browser). */
+const PEOPLE_FOLD_KEY = 'souvenir.peopleFolded';
+function foldPeople(folded) {
+  $('people-section').classList.toggle('folded', folded);
+  $('people-title').setAttribute('aria-expanded', String(!folded));
+  $('people-title').querySelector('.fold').textContent = folded ? '▸' : '▾';
+  try { localStorage.setItem(PEOPLE_FOLD_KEY, folded ? '1' : '0'); } catch { /* ignore */ }
+}
+$('people-title').onclick = () => foldPeople(!$('people-section').classList.contains('folded'));
+$('people-title').onkeydown = (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('people-title').click(); }
+};
+try { if (localStorage.getItem(PEOPLE_FOLD_KEY) === '1') foldPeople(true); } catch { /* ignore */ }
+
+function leavePerson() {
+  state.person = null;
+  renderPeople();
+  updatePhotos();
 }
 
 function step(delta) {
@@ -860,7 +1100,8 @@ $('viewer').querySelector('.v-stage').addEventListener('pointerup', (e) => {
   else step(e.clientX < window.innerWidth / 2 ? -1 : 1);
 });
 document.addEventListener('keydown', (e) => {
-  if (!viewerOpen()) return;
+  if (!viewerOpen() || e.target.tagName === 'INPUT') return;
+  if (e.key === 'f') { toggleFaces(); wakeViewer(); return; }
   if (e.key === 'ArrowLeft') step(-1);
   else if (e.key === 'ArrowRight') step(1);
   else if (e.key === ' ' && e.target.tagName !== 'VIDEO') {
@@ -926,6 +1167,7 @@ async function select(days, { add = false } = {}) {
   }
   if (state.selected.length) state.month = keyDate(state.selected[state.selected.length - 1]);
   defaultColor();
+  if (state.people.available) loadPeople(); // their number of photos on these days
   render();
   await load();
   render(true);
@@ -1018,6 +1260,30 @@ function selectWeek() {
   const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
   selectRange(dayKey(monday), dayKey(sunday));
 }
+
+/* The "Dates" title: unfolded, the calendar chooses the days that filter everything;
+   folded, no day is selected, i.e. no date filter: the search and Personnes cover all
+   dates (the traces and photos of every day are not loaded: far too many). Unfolding
+   gives back the days selected before. Remembered in this browser. */
+const DATES_FOLD_KEY = 'souvenir.datesFolded';
+const datesFolded = () => $('dates-section').classList.contains('folded');
+function foldDates(folded) {
+  if (folded === datesFolded()) return;
+  $('dates-section').classList.toggle('folded', folded);
+  $('dates-title').setAttribute('aria-expanded', String(!folded));
+  $('dates-title').querySelector('.fold').textContent = folded ? '▸' : '▾';
+  try { localStorage.setItem(DATES_FOLD_KEY, folded ? '1' : '0'); } catch { /* ignore */ }
+  if (folded) {
+    state.datesKept = [...state.selected];
+    select([]);
+  } else {
+    select(state.datesKept.length ? state.datesKept : state.days.slice(-1));
+  }
+}
+$('dates-title').onclick = () => foldDates(!datesFolded());
+$('dates-title').onkeydown = (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('dates-title').click(); }
+};
 
 /* Year and month menus. The year menu shows the calendar's year; the month menu
    keeps the user's choice ("*" = whole year, the default), so choosing a year
@@ -1130,8 +1396,8 @@ $('prev-month').onclick = () => shiftMonth(-1);
 $('next-month').onclick = () => shiftMonth(1);
 document.addEventListener('keydown', (e) => {
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || viewerOpen()) return; // the viewer has its own keys
-  if (e.key === 'ArrowLeft') stepDay(-1);
-  if (e.key === 'ArrowRight') stepDay(1);
+  if (e.key === 'ArrowLeft' && !datesFolded()) stepDay(-1); // folded "Dates": no day to step
+  if (e.key === 'ArrowRight' && !datesFolded()) stepDay(1);
   if (e.key === 'd' && !e.ctrlKey && !e.metaKey && !e.altKey && !$('photos').hidden) return openViewer(); // diaporama
   // Page Up / Down, Home / End scroll the photo panel, without clicking in it first.
   const panel = $('photos');
@@ -1146,10 +1412,19 @@ document.addEventListener('keydown', (e) => {
 (async () => {
   syncOutputs();
   state.days = await (await fetch('api/days')).json();
+  loadPeople();
   fillYears();
   $('count').textContent = `${state.days.length} jour${state.days.length > 1 ? 's' : ''}`;
   const fromHash = location.hash.slice(1).split(',').filter((d) => state.days.includes(d));
   const initial = fromHash.length ? fromHash : state.days.slice(-1);
-  if (initial.length) await select(initial);
+  let folded = false;
+  try { folded = localStorage.getItem(DATES_FOLD_KEY) === '1'; } catch { /* ignore */ }
+  if (folded) { // "Dates" left folded: all dates; unfolding will give these days
+    state.datesKept = initial;
+    $('dates-section').classList.add('folded');
+    $('dates-title').setAttribute('aria-expanded', 'false');
+    $('dates-title').querySelector('.fold').textContent = '▸';
+    await select([]);
+  } else if (initial.length) await select(initial);
   else renderCalendar();
 })();

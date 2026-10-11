@@ -55,6 +55,9 @@ done
 service="[Unit]
 Description=Souvenir: private map of GPS traces and photos
 After=network.target
+# Give up after 3 failed starts in a minute (e.g. port already used) instead of looping.
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 WorkingDirectory=$ROOT

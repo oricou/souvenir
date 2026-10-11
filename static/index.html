@@ -20,28 +20,55 @@
         <input
           type="search"
           id="search"
-          placeholder="Rechercher : bateau, plage au coucher du soleil…"
+          placeholder="Rechercher : bateau, plage au coucher du soleil, Laurence à vélo…"
           autocomplete="off"
         />
         <p class="hint" id="search-note" hidden></p>
       </form>
 
-      <section class="cal">
-        <div class="cal-head">
-          <button id="prev-month" aria-label="Mois précédent">‹</button>
-          <strong id="month-label"></strong>
-          <button id="next-month" aria-label="Mois suivant">›</button>
+      <section id="people-section" hidden>
+        <h2
+          id="people-title"
+          role="button"
+          tabindex="0"
+          aria-expanded="true"
+          title="Afficher / masquer"
+        >
+          <span class="fold">▾</span> Personnes
+        </h2>
+        <div id="people" class="people"></div>
+      </section>
+
+      <section class="cal" id="dates-section">
+        <h2
+          id="dates-title"
+          role="button"
+          tabindex="0"
+          aria-expanded="true"
+          title="Déplier : choisir des jours · Replier : toutes les dates"
+        >
+          <span class="fold">▾</span> Dates<span id="dates-all"> : toutes</span>
+        </h2>
+        <div id="dates-body">
+          <div class="cal-head">
+            <button id="prev-month" aria-label="Mois précédent">‹</button>
+            <strong id="month-label"></strong>
+            <button id="next-month" aria-label="Mois suivant">›</button>
+          </div>
+          <div class="cal-grid" id="cal-grid"></div>
+          <div class="range-buttons">
+            <button id="sel-week">Semaine</button>
+            <select
+              id="sel-month"
+              title="Choisir un mois (Mois : toute l'année)"
+            ></select>
+            <select id="sel-year" title="Choisir une année"></select>
+          </div>
+          <p class="hint">
+            Clic : un jour · Ctrl+clic : ajouter/retirer · ⇧+clic : période · ←
+            → : jour précédent/suivant
+          </p>
         </div>
-        <div class="cal-grid" id="cal-grid"></div>
-        <div class="range-buttons">
-          <button id="sel-week">Semaine</button>
-          <select id="sel-month" title="Choisir un mois (Mois : toute l'année)"></select>
-          <select id="sel-year" title="Choisir une année"></select>
-        </div>
-        <p class="hint">
-          Clic : un jour · Ctrl+clic : ajouter/retirer · ⇧+clic : période · ← →
-          : jour précédent/suivant
-        </p>
       </section>
 
       <section>
@@ -128,8 +155,21 @@
       <header>
         <h2>Photos</h2>
         <span class="muted" id="photo-count"></span>
-        <button id="viewer-open" title="Diaporama plein écran (touche d ; ← → pour naviguer, Échap pour fermer)">⛶</button>
+        <button
+          id="viewer-open"
+          title="Diaporama plein écran (touche d ; ← → pour naviguer, Échap pour fermer)"
+        >
+          ⛶
+        </button>
       </header>
+      <form id="alias-form" class="aliases" hidden>
+        <label
+          >Aussi appelé(e) :
+          <input name="aliases" autocomplete="off" />
+        </label>
+        <button type="submit">OK</button>
+        <span class="hint" id="alias-note"></span>
+      </form>
       <p class="hint" id="photo-note" hidden></p>
       <div id="photo-list"></div>
     </aside>
@@ -143,16 +183,48 @@
     <main id="map"></main>
     <!-- Phones: one panel at a time, chosen here (hidden on larger screens). -->
     <nav id="tabs" role="tablist" aria-label="Panneaux">
-      <button role="tab" data-tab="controls" aria-label="Recherche et réglages">🔍</button>
-      <button role="tab" data-tab="photos" aria-label="Photos">📷<span id="tab-count"></span></button>
-      <button role="tab" data-tab="map" aria-label="Carte" aria-selected="true">🌍</button>
+      <button role="tab" data-tab="controls" aria-label="Recherche et réglages">
+        🔍<span
+          id="tab-here"
+          title="« ici » : seulement les photos de la zone visible"
+          hidden
+          >🎯</span
+        >
+      </button>
+      <button role="tab" data-tab="photos" aria-label="Photos">
+        📷<span id="tab-count"></span>
+      </button>
+      <button role="tab" data-tab="map" aria-label="Carte" aria-selected="true">
+        🌍
+      </button>
     </nav>
     <div id="viewer" hidden>
       <div class="v-stage"></div>
+      <div class="v-faces-layer"></div>
+      <form class="v-ask" hidden>
+        <label
+          >Qui est-ce ?
+          <input name="who" list="people-names" autocomplete="off"
+        /></label>
+        <datalist id="people-names"></datalist>
+        <div>
+          <button type="submit">OK</button>
+          <button type="button" class="v-ask-not" hidden></button>
+          <button type="button" class="v-ask-cancel">Annuler</button>
+        </div>
+      </form>
       <button class="v-prev" title="Précédente (←)">‹</button>
       <button class="v-next" title="Suivante (→)">›</button>
       <div class="v-top">
-        <button class="v-play" title="Défilement automatique (Espace)">▶</button>
+        <button
+          class="v-faces"
+          title="Visages : nommer les personnes (touche f)"
+        >
+          👤
+        </button>
+        <button class="v-play" title="Défilement automatique (Espace)">
+          ▶
+        </button>
         <button class="v-close" title="Fermer (Échap)">✕</button>
       </div>
       <div class="v-bar">

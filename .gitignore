@@ -6,3 +6,4 @@ models/
 tools/llama/
 tools/pmtiles
 __pycache__/
+.venv/

@@ -297,6 +297,11 @@ class PhotoIndex:
                       f, separators=(",", ":"))
         os.replace(tmp, self.cache_file)
 
+    def names_of_days(self, days):
+        """Names of the photos of these days."""
+        self.refresh()
+        return {m["name"] for d in days for m in self.by_day.get(d, [])}
+
     def days(self):
         """Days that have at least one photo."""
         self.refresh()

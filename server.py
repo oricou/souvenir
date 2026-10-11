@@ -33,6 +33,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 import photos
+import people
 import search
 import timezones
 
@@ -189,6 +190,7 @@ class Handler(SimpleHTTPRequestHandler):
     photo_index = None  # photos.PhotoIndex
     password = None     # asked from other devices (HTTP Basic auth); None = open
     search = None       # search.Search: photos by meaning
+    people = None       # people.People: names of the faces
 
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=os.path.join(ROOT, "static"), **kw)
@@ -261,7 +263,7 @@ class Handler(SimpleHTTPRequestHandler):
         if url.path == "/api/photos":
             query = parse_qs(url.query)
             days = [d for d in query.get("days", [""])[0].split(",") if d]
-            found = self.photo_index.photos_of(days)
+            found = self.with_people(self.photo_index.photos_of(days))
             if "bbox" not in query:
                 return self.send_json(found)
             # "ici": only the photos inside west,south,east,north, plus the days' total.
@@ -272,6 +274,22 @@ class Handler(SimpleHTTPRequestHandler):
             inside = [p for p in found if p["lat"] is not None
                       and s <= p["lat"] <= n and w <= p["lon"] <= e]
             return self.send_json({"total": len(found), "photos": inside})
+        if url.path == "/api/people":  # ?days=…: count each person's photos on those days
+            days = [d for d in parse_qs(url.query).get("days", [""])[0].split(",") if d]
+            among = self.photo_index.names_of_days(days) if days else None
+            return self.send_json({"available": self.people.available(), "people": self.people.people(among)})
+        if url.path == "/api/faces":
+            photo = parse_qs(url.query).get("photo", [""])[0]
+            return self.send_json(self.people.faces_of(photo) if self.photo_index.get(photo) else [])
+        if url.path == "/api/people/photos":
+            name = parse_qs(url.query).get("name", [""])[0]
+            name = self.people.canonical(name)
+            found = self.people.photos_of(name)
+            info = self.photo_index.photos_named(list(found))
+            result = sorted((info[n] for n in found if n in info), key=lambda p: p["t"])
+            return self.send_json({"name": name, "total": len(result), "photos": self.with_people(result)})
+        if url.path == "/face":
+            return self.send_face(parse_qs(url.query))
         m = PHOTO_RE.match(url.path)
         if m:
             return self.send_photo(unquote(m.group(2)), thumb=m.group(1) == "thumbs")
@@ -281,21 +299,106 @@ class Handler(SimpleHTTPRequestHandler):
         self.revalidate = True
         return super().do_GET()
 
+    def do_POST(self):
+        """The user's answers about people: {photo, face, name} to /api/people/name
+        ("this face is name") or /api/people/refuse ("this face is not name"), and
+        {name, aliases} to /api/people/aliases (their other names)."""
+        if not self.authorized():
+            return
+        path = urlparse(self.path).path
+        if path == "/api/people/aliases":
+            return self.post_aliases()
+        if path not in ("/api/people/name", "/api/people/refuse"):
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 10_000:
+                raise ValueError("body size")
+            body = json.loads(self.rfile.read(length))
+            photo, face, name = str(body["photo"]), int(body["face"]), str(body["name"]).strip()
+            if not self.photo_index.get(photo) or not name or len(name) > 100:
+                raise ValueError("photo or name")
+            if path.endswith("/name"):
+                name = self.people.name_face(photo, face, name)
+            else:
+                self.people.refuse_face(photo, face, name)
+        except (ValueError, KeyError, TypeError) as e:
+            return self.send_json_status(HTTPStatus.BAD_REQUEST, {"error": str(e)})
+        return self.send_json({"ok": True, "name": name, "faces": self.people.faces_of(photo)})
+
+    def post_aliases(self):
+        """{name, aliases: [...]}: the other names of a person."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 10_000:
+                raise ValueError("body size")
+            body = json.loads(self.rfile.read(length))
+            aliases = body["aliases"]
+            if not isinstance(aliases, list) or len(aliases) > 20:
+                raise ValueError("aliases: a list of at most 20 names")
+            name, aliases = self.people.set_aliases(str(body["name"]), aliases)
+        except (ValueError, KeyError, TypeError) as e:
+            return self.send_json_status(HTTPStatus.BAD_REQUEST, {"error": str(e).strip("'\"")})
+        return self.send_json({"ok": True, "name": name, "aliases": aliases})
+
+    def send_json_status(self, status, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def with_people(self, photo_list):
+        """The photos, each with the names of the people recognised in it."""
+        if self.people.available():
+            for p in photo_list:
+                p["people"] = self.people.names_in(p["name"])
+        return photo_list
+
+    def send_face(self, query):
+        """A small square image of a face: /face?photo=NAME&face=INDEX."""
+        photo = query.get("photo", [""])[0]
+        meta = self.photo_index.get(photo)
+        try:
+            index = int(query.get("face", [""])[0])
+            if not meta:
+                raise KeyError
+            source = (photos.thumbnail(self.photo_dir, photo, THUMBS_DIR) if meta["kind"] == "video"
+                      else os.path.join(self.photo_dir, photo))
+            path = self.people.crop(photo, index, source)
+        except (ValueError, KeyError, OSError):
+            return self.send_error(HTTPStatus.NOT_FOUND, "Unknown face")
+        return self.send_ranged(path, "image/jpeg", revalidate=True)
+
     def send_search(self, query):
         """Photos matching ?q= (by meaning), best first; ?bbox= keeps those in an area
         ("ici"), ?days= those of some days, ?limit= the number returned."""
         text = query.get("q", [""])[0].strip()
         if not text:
             return self.send_json({"total": 0, "photos": []})
-        try:
-            ranked = self.search.ranked(text)
-        except search.SearchError as e:
-            return self.send_json({"error": str(e), "total": 0, "photos": []})
+        # Known names in the query ("Laurence et Paul à vélo") keep only the photos where
+        # all of them are recognised; the rest of the text ranks those photos by meaning.
+        names, rest = self.people.split_query(text) if self.people.available() else ([], text)
+        among, warning = None, None
+        if names:
+            among = set.intersection(*(set(self.people.photos_of(n)) for n in names))
+        if "days" in query:  # the days selected in the calendar: rank among their photos only
+            in_days = self.photo_index.names_of_days(d for d in query["days"][0].split(",") if d)
+            among = in_days if among is None else among & in_days
+        if names and not rest:  # just names: all their photos, by date
+            ranked = [(n, None) for n in among]
+        else:
+            try:
+                ranked = self.search.ranked(rest, among)
+            except search.SearchError as e:
+                if not names:
+                    return self.send_json({"error": str(e), "total": 0, "photos": []})
+                ranked, warning = [(n, None) for n in among], f"« {rest} » ignoré : {e}"
         info = self.photo_index.photos_named([n for n, _ in ranked])
-        found = [{**info[n], "score": s} for n, s in ranked if n in info]
-        if "days" in query:
-            days = set(query["days"][0].split(","))
-            found = [p for p in found if p["day"] in days]
+        found = self.with_people([{**info[n], "score": s} for n, s in ranked if n in info])
+        if ranked and ranked[0][1] is None:
+            found.sort(key=lambda p: p["t"])
         if "bbox" in query:
             try:
                 w, s, e, n = map(float, query["bbox"][0].split(","))
@@ -307,7 +410,10 @@ class Handler(SimpleHTTPRequestHandler):
             limit = max(1, min(1000, int(query.get("limit", ["200"])[0])))
         except ValueError:
             limit = 200
-        return self.send_json({"total": len(found), "photos": found[:limit]})
+        result = {"total": len(found), "photos": found[:limit], "names": names, "rest": rest}
+        if warning:
+            result["warning"] = warning
+        return self.send_json(result)
 
     def send_photo(self, name, thumb):
         # Only names from the listing: no path tricks can reach other files.
@@ -412,6 +518,13 @@ def main():
     p.add_argument("--embed-key",
                    help="key of that API if it needs one (default: $SOUVENIR_API_KEY)")
     args = p.parse_args()
+    # Take the port first: if it is busy (another Souvenir?), say so at once, before
+    # reading the indexes and starting the search model for nothing.
+    try:
+        httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+    except OSError as e:
+        sys.exit(f"Cannot listen on {args.host}:{args.port} ({e.strerror}): another program uses it? "
+                 f"(ss -ltnp | grep :{args.port})")
     Handler.search = search.Search(args.embed_api, args.embed_key or os.environ.get("SOUVENIR_API_KEY"))
     Handler.password = args.password or os.environ.get("SOUVENIR_PASSWORD") or None
     Handler.gps_dir = os.path.abspath(args.gps or os.path.join(args.data, "gps"))
@@ -435,15 +548,23 @@ def main():
     # (a child process) is stopped too.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     Handler.search.start()
+    Handler.people = people.People()
+    if Handler.people.available():
+        names = Handler.people.people()
+        print(f"People: {len(Handler.people.faces)} faces found, {len(names)} names given"
+              + (f" ({', '.join(p['name'] for p in names[:5])}…)" if names else ""))
+    else:
+        print("People: no faces found yet (make faces, then tools/find_faces.py)")
     print(f"Search: {Handler.search.status()}")
     if args.host in ("0.0.0.0", "::", ""):
         print(f"Open http://127.0.0.1:{args.port}/ (this computer) or "
               f"http://{lan_address()}:{args.port}/ (other devices on the network)")
-        print("Password: asked from other devices" if Handler.password else
+        print("Access: password protected (the browsers of other devices will ask for it; "
+              "this computer has free access)" if Handler.password else
               "warning: no password, every device on the network can see the site (see --password)")
     else:
         print(f"Open http://{args.host}:{args.port}/")
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    httpd.serve_forever()
 
 
 if __name__ == "__main__":

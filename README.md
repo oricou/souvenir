@@ -23,6 +23,7 @@ from contacting any other site, so neither the traces nor the viewed area leak.
     make install    # pmtiles tool, world map (zoom 0-10, ~3.8 GB), time-zone grid
     make france     # optional: detailed map of France (zoom 0-15, ~10 GB)
     make search     # optional: CPU search model (llama.cpp + 1.8 GB), see Search
+    make faces      # optional: OpenCV (in .venv/) + face models (40 MB), see People
 
 Each file is only downloaded if missing. Maps come from the latest Protomaps
 build of the last week (`make france BUILD=YYYYMMDD` to choose).
@@ -114,14 +115,38 @@ The query is built exactly as vLLM builds it (chat template without the final
 "assistant" line, sent as token ids), so CPU and GPU vectors agree (measured
 similarity 0.997-0.999, same results). Nothing leaves your network.
 
+## People
+
+Faces are found once by `tools/find_faces.py` (OpenCV YuNet + SFace, on the CPU,
+~0.13 s per photo; `make faces` installs them), into `cache/faces.*`.
+
+In the slideshow, 👤 (or `f`) shows the faces: white = unknown, yellow =
+recognised, green = named by you. Tap a face to name it ("Laurence"), confirm
+it, or say "Pas Laurence". From a few named faces, every face close enough
+(similarity ≥ 0.5) is recognised; refusals keep look-alikes away. The
+"Personnes" section lists the names; tap one to see all their photos, and
+correct mistakes from there.
+
+Names work in the search box: "Laurence à vélo" keeps only the photos where
+Laurence is recognised and ranks them by "à vélo"; "Laurence et Paul à la
+plage" needs both; "Laurence" alone lists her photos by date. Case and accents
+of names do not matter; unknown names are searched by meaning as before. The
+meaning ranks scenes, places and activities well, small details of a face
+(glasses…) less so.
+
+Your names and corrections are kept in `data/people.json`, each with its face
+vector, so they survive a new run of `find_faces.py`. Face vectors are
+biometric data: they stay on your machines like the rest.
+
 ## Keyboard shortcuts
 
 | Key | Action |
 |---|---|
-| ← → | previous / next day |
+| ← → | previous / next day (when "Dates" is unfolded) |
 | Page Up / Page Down | scroll the photo panel by one screen |
 | Home / End | first / last photo of the panel |
 | d | full-screen slideshow (diaporama) of the panel's photos |
+| f | in the slideshow: show the faces, to name people |
 
 In the slideshow: ← → previous / next photo, Space starts or stops automatic
 playback (5 s per photo), Esc closes.
@@ -169,6 +194,7 @@ souvenir/
 ├── server.py          the server
 ├── photos.py          photo times, positions and previews
 ├── search.py          search photos by meaning (vectors, local llama.cpp)
+├── people.py          names of the faces (matching, your answers)
 ├── models/            the search model for llama.cpp (make search)
 ├── timezones.py       time zone of a position
 ├── README.md          this file
@@ -189,6 +215,7 @@ souvenir/
     ├── edit_photo.py  set a photo's date / position
     ├── dedup.py       find and remove duplicate files
     ├── embed_photos.py  turn photos into vectors for the search
+    ├── find_faces.py  find faces and turn them into vectors
     └── build_timezones.py  build tiles/timezones.bin (time zone of each place)
 ```
 

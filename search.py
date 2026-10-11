@@ -194,16 +194,19 @@ class Search:
         vector = np.asarray(vector, dtype=np.float32)
         return vector / (np.linalg.norm(vector) or 1.0)
 
-    def ranked(self, text):
-        """[(name, score)] of the photos matching the query, best first."""
+    def ranked(self, text, among=None):
+        """[(name, score)] of the photos matching the query, best first; with `among`
+        (photo names, e.g. those of a person), only those, compared with each other."""
         if np is None:
             raise SearchError("search needs NumPy (sudo apt install python3-numpy)")
         self._load()
-        if not self.names:
+        rows = np.arange(len(self.names)) if among is None else np.asarray(
+            [i for i, n in enumerate(self.names) if n in among], dtype=int)
+        if not len(rows):
             return []
         query = self._embed_query(text)
-        scores = self.matrix @ query
+        scores = self.matrix[rows] @ query
         best = float(scores.max())
         keep = np.flatnonzero(scores >= max(MIN_SCORE, best * RELATIVE_SCORE))
         keep = keep[np.argsort(-scores[keep])]
-        return [(self.names[i], round(float(scores[i]), 3)) for i in keep]
+        return [(self.names[rows[i]], round(float(scores[i]), 3)) for i in keep]
