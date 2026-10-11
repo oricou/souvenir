@@ -152,6 +152,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 .photo .who { padding: 0 10px 6px; font-size: 12px; color: var(--fg); }
 #viewer.idle button, #viewer.idle .v-bar { opacity: 0; } /* hidden after a few s without mouse move */
 #viewer.idle { cursor: none; }
+#viewer.zoomed .v-stage { cursor: grab; touch-action: none; } /* drag to move the zoomed photo */
+#viewer.zoomed .v-stage:active { cursor: grabbing; }
+#viewer .v-stage img { will-change: transform; }
 #photos h2 { margin: 0; }
 #photo-list { display: flex; flex-direction: column; gap: 14px; }
 .photo-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }

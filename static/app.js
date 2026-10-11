@@ -776,6 +776,7 @@ function preload(p) {
   if (!p || p.kind === 'video' || viewer.ready.has(p.name)) return;
   const img = new Image();
   img.alt = '';
+  img.draggable = false; // the slideshow drags it itself when zoomed
   img.src = photoUrl(p.name);
   img.decode().catch(() => { /* shown as the preview, then retried normally */ });
   viewer.ready.set(p.name, img);
@@ -806,6 +807,8 @@ function closeViewer() {
 
 function showInViewer() {
   const p = viewer.list[viewer.i];
+  viewer.zoom = { z: 1, x: 0, y: 0 };
+  $('viewer').classList.remove('zoomed');
   const stage = $('viewer').querySelector('.v-stage');
   stage.textContent = '';
   if (p.kind === 'video') {
@@ -825,10 +828,11 @@ function showInViewer() {
       // Not ready yet: the preview shows at once, the original replaces it when decoded.
       const thumb = document.createElement('img');
       thumb.alt = '';
+      thumb.draggable = false;
       thumb.src = photoUrl(p.name, true);
       stage.append(thumb);
       full.decode().then(() => {
-        if (viewer.list[viewer.i] === p) { thumb.replaceWith(full); drawFaces(); }
+        if (viewer.list[viewer.i] === p) { thumb.replaceWith(full); applyZoom(); }
       }, () => {});
     }
   }
@@ -1080,7 +1084,7 @@ async function answerFace(kind, name) {
   });
   form.addEventListener('pointerup', (e) => e.stopPropagation());
   $('viewer').querySelector('.v-faces').onclick = (e) => { e.stopPropagation(); toggleFaces(); };
-  window.addEventListener('resize', () => { if (viewerOpen()) drawFaces(); });
+  window.addEventListener('resize', () => { if (viewerOpen()) { clampZoom(); applyZoom(); } });
 }
 
 /* The "Personnes" section: each name, its face and number of photos; a tap shows them. */
@@ -1225,21 +1229,117 @@ $('viewer').querySelector('.v-play').onclick = (e) => {
 };
 $('viewer').addEventListener('mousemove', wakeViewer);
 // Click on the left / right half of a photo, or swipe, to move.
-let swipeX = null;
-$('viewer').querySelector('.v-stage').addEventListener('pointerdown', (e) => { swipeX = e.clientX; });
+let swipeX = null, drag = null, clickTimer = null;
+$('viewer').querySelector('.v-stage').addEventListener('pointerdown', (e) => {
+  swipeX = e.clientX;
+  if (viewer.zoom.z > 1 && e.button === 0) { // zoomed: dragging moves the photo
+    e.preventDefault(); // no text selection, no browser image drag
+    drag = { x: e.clientX, y: e.clientY, zx: viewer.zoom.x, zy: viewer.zoom.y };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+});
+// The browser's own image drag (to drop the photo elsewhere) would take the pointer
+// after a few pixels and stop ours (pointercancel): not in the slideshow.
+$('viewer').querySelector('.v-stage').addEventListener('dragstart', (e) => e.preventDefault());
+$('viewer').querySelector('.v-stage').addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  if (!(e.buttons & 1)) { drag = null; return; } // the button is no longer held: not dragging
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (!drag.moved && Math.hypot(dx, dy) < 4) return; // a press, not yet a drag
+  drag.moved = true;
+  viewer.zoom.x = drag.zx + dx;
+  viewer.zoom.y = drag.zy + dy;
+  clampZoom();
+  applyZoom();
+});
+// The browser took the pointer back (button released elsewhere…): stop dragging.
+for (const type of ['lostpointercapture', 'pointercancel']) {
+  $('viewer').querySelector('.v-stage').addEventListener(type, () => { drag = null; });
+}
 $('viewer').querySelector('.v-stage').addEventListener('pointerup', (e) => {
+  if (drag) { drag = null; swipeX = null; return; } // zoomed: no change of photo
   if (swipeX === null || e.target.tagName === 'VIDEO') return; // video: its own controls
   const dx = e.clientX - swipeX;
   swipeX = null;
-  if (Math.abs(dx) > 50) step(dx < 0 ? 1 : -1);
-  else step(e.clientX < window.innerWidth / 2 ? -1 : 1);
+  if (Math.abs(dx) > 50) return step(dx < 0 ? 1 : -1); // a swipe: at once
+  // A click changes photo a little later: the first click of a double-click (zoom) must not.
+  const dir = e.clientX < window.innerWidth / 2 ? -1 : 1;
+  clearTimeout(clickTimer);
+  clickTimer = setTimeout(() => step(dir), 250);
 });
+
+/* ---------- Zoom in the slideshow: wheel (towards the cursor), double-click, drag,
+   Shift+arrows. The photo starts unzoomed; ← → still change photo. ---------- */
+
+const ZOOM_MAX = 8, ZOOM_STEP = 1.2;
+viewer.zoom = { z: 1, x: 0, y: 0 }; // scale, and translation in px of the photo's top-left
+const zoomImg = () => $('viewer').querySelector('.v-stage img');
+
+/** Keep the zoomed photo covering the screen (centred when smaller than it). */
+function clampZoom() {
+  const img = zoomImg(), stage = $('viewer').querySelector('.v-stage');
+  if (!img) return;
+  const z = viewer.zoom;
+  const fit = (t, base, size, room) => size * z.z <= room
+    ? (room - size * z.z) / 2 - base
+    : Math.min(-base, Math.max(room - size * z.z - base, t));
+  z.x = fit(z.x, img.offsetLeft, img.offsetWidth, stage.clientWidth);
+  z.y = fit(z.y, img.offsetTop, img.offsetHeight, stage.clientHeight);
+  if (z.z === 1) { z.x = 0; z.y = 0; }
+}
+function applyZoom() {
+  const img = zoomImg(), z = viewer.zoom;
+  if (img) {
+    img.style.transformOrigin = '0 0';
+    img.style.transform = z.z === 1 ? '' : `translate(${z.x}px, ${z.y}px) scale(${z.z})`;
+  }
+  $('viewer').classList.toggle('zoomed', z.z > 1);
+  drawFaces(); // face boxes follow the zoom
+}
+/** Zoom by `factor`, keeping the point under (clientX, clientY) where it is. */
+function zoomAt(clientX, clientY, factor) {
+  const img = zoomImg();
+  if (!img) return; // videos are not zoomed
+  stopAuto();
+  const r = $('viewer').querySelector('.v-stage').getBoundingClientRect();
+  const px = clientX - r.left - img.offsetLeft, py = clientY - r.top - img.offsetTop;
+  const z = viewer.zoom, nz = Math.min(ZOOM_MAX, Math.max(1, z.z * factor));
+  z.x = px - (px - z.x) * nz / z.z;
+  z.y = py - (py - z.y) * nz / z.z;
+  z.z = nz;
+  clampZoom();
+  applyZoom();
+}
+$('viewer').querySelector('.v-stage').addEventListener('wheel', (e) => {
+  e.preventDefault();
+  zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
+}, { passive: false });
+$('viewer').querySelector('.v-stage').addEventListener('dblclick', (e) => {
+  clearTimeout(clickTimer); // it was not a click to change photo
+  if (viewer.zoom.z > 1) zoomAt(e.clientX, e.clientY, 1 / viewer.zoom.z); else zoomAt(e.clientX, e.clientY, 2.5);
+});
+/** Shift+arrows: move the zoomed photo by a sixth of the screen. */
+function panZoom(dx, dy) {
+  if (viewer.zoom.z === 1) return;
+  const stage = $('viewer').querySelector('.v-stage');
+  viewer.zoom.x += dx * stage.clientWidth / 6;
+  viewer.zoom.y += dy * stage.clientHeight / 6;
+  clampZoom();
+  applyZoom();
+}
 document.addEventListener('keydown', (e) => {
   if (!viewerOpen() || e.target.tagName === 'INPUT') return;
   if (e.key === 'f') { toggleFaces(); wakeViewer(); return; }
   if (e.key === 'Delete') { deleteShown(); wakeViewer(); return; }
   if (e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
     e.preventDefault(); undoDelete(); wakeViewer(); return;
+  }
+  if (e.shiftKey && e.key.startsWith('Arrow')) { // move in the zoomed photo
+    e.preventDefault();
+    const d = { ArrowLeft: [1, 0], ArrowRight: [-1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[e.key];
+    if (d) panZoom(...d);
+    wakeViewer();
+    return;
   }
   if (e.key === 'ArrowLeft') step(-1);
   else if (e.key === 'ArrowRight') step(1);
