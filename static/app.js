@@ -62,6 +62,7 @@ const state = {
   search: null,                 // {q, total, photos, error} while a search is shown, else null
   person: null,                 // {name, total, photos} while a person's photos are shown, else null
   people: { available: false, people: [] }, // names given to faces (api/people)
+  admin: { enabled: false, logged: false },  // deleting photos (api/admin)
   highlighted: null,            // name of the photo outlined in the panel / enlarged on the map
   month: null,            // Date of the first day of the shown month
 };
@@ -848,6 +849,140 @@ function showInViewer() {
   highlightPhoto(p.name);
   hideAsk();
   drawFaces();
+  $('viewer').querySelector('.v-delete').hidden = !state.admin.enabled;
+  $('viewer').querySelector('.v-lock').hidden = !state.admin.logged;
+}
+
+/* ---------- Admin: Suppr (or 🗑) moves the photo to data/trash, with "Annuler" ---------- */
+
+async function loadAdmin() {
+  try {
+    const r = await fetch('api/admin');
+    if (r.ok) state.admin = await r.json();
+  } catch { /* keep what we have */ }
+}
+async function postJSON(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  return { ok: r.ok, data: await r.json().catch(() => ({})) };
+}
+
+/** Ask the admin password in the slideshow, then run `next` once logged in. */
+let afterLogin = null;
+function askAdmin(next) {
+  const form = $('viewer').querySelector('.v-admin');
+  afterLogin = next;
+  stopAuto();
+  hideAsk();
+  form.querySelector('.v-admin-error').textContent = '';
+  form.pw.value = '';
+  form.hidden = false;
+  form.pw.focus();
+}
+{
+  const form = $('viewer').querySelector('.v-admin');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const { ok, data } = await postJSON('api/admin/login', { password: form.pw.value });
+    form.pw.value = '';
+    if (!ok) {
+      form.querySelector('.v-admin-error').textContent =
+        data.error === 'wrong admin password' ? 'Mot de passe incorrect.' : (data.error || 'Refusé.');
+      return;
+    }
+    state.admin.logged = true;
+    form.hidden = true;
+    $('viewer').querySelector('.v-lock').hidden = false;
+    const next = afterLogin;
+    afterLogin = null;
+    next?.();
+  });
+  form.querySelector('.v-admin-cancel').onclick = () => { form.hidden = true; afterLogin = null; };
+  form.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); form.hidden = true; afterLogin = null; }
+    e.stopPropagation(); // typing the password must not drive the slideshow
+  });
+  form.addEventListener('pointerup', (e) => e.stopPropagation());
+  $('viewer').querySelector('.v-lock').onclick = async (e) => {
+    e.stopPropagation();
+    await postJSON('api/admin/logout');
+    state.admin.logged = false;
+    $('viewer').querySelector('.v-lock').hidden = true;
+  };
+  $('viewer').querySelector('.v-delete').onclick = (e) => { e.stopPropagation(); deleteShown(); };
+}
+
+/** Remove a photo from every list the page holds (it is no longer on the server). */
+function forgetPhoto(name) {
+  const drop = (list) => list && list.splice(0, list.length, ...list.filter((p) => p.name !== name));
+  for (const list of state.photos.values()) drop(list);
+  drop(state.search?.photos);
+  drop(state.person?.photos);
+  drop(state.here.photos);
+  if (state.search) state.search.total = state.search.photos.length;
+  updatePhotos();
+}
+
+/** Suppr: the photo shown goes to data/trash; the slideshow moves on; "Annuler" brings it back. */
+let toastTimer = null;
+async function deleteShown() {
+  const p = viewer.list[viewer.i];
+  if (!p || !state.admin.enabled) return;
+  if (!state.admin.logged) return askAdmin(deleteShown);
+  const { ok, data } = await postJSON('api/photos/delete', { name: p.name });
+  if (!ok) {
+    if (data.login) { state.admin.logged = false; return askAdmin(deleteShown); } // session expired
+    return alert(`Impossible : ${data.error || ''}`);
+  }
+  const index = viewer.i;
+  viewer.list.splice(index, 1);
+  forgetPhoto(p.name);
+  loadPeople(); // their numbers of photos
+  const entry = { p, trash: data.trash, index, list: viewer.list };
+  deletions.push(entry);
+  showToast(`${p.name.split('/').pop()} mis à la corbeille`, () => undoDelete(entry));
+  if (!viewer.list.length) return closeViewer();
+  viewer.i = Math.min(index, viewer.list.length - 1);
+  showInViewer();
+}
+
+/* Deletions made since the page was opened, last one last: "Annuler" undoes its own,
+   Ctrl+Z (⌘Z) undoes the last one, again the one before, etc. */
+const deletions = [];
+async function undoDelete(entry = deletions[deletions.length - 1]) {
+  if (!entry) return showToast('Rien à annuler.');
+  if (!state.admin.logged) { // the admin session expired: log in, then undo
+    if (viewerOpen()) return askAdmin(() => undoDelete(entry));
+    return alert('Session admin expirée : ouvrez le diaporama (touche d) puis refaites Ctrl+Z.');
+  }
+  const { p, trash, index, list } = entry;
+  const back = await postJSON('api/photos/restore', { name: p.name, trash });
+  if (!back.ok) {
+    if (back.data.login) { state.admin.logged = false; return undoDelete(entry); }
+    return alert(`Impossible de la remettre : ${back.data.error || ''}`);
+  }
+  deletions.splice(deletions.indexOf(entry), 1);
+  $('viewer').querySelector('.v-toast').hidden = true;
+  state.photos.delete(p.day); // reloaded, with it
+  await load();
+  if (state.search) await runSearch();
+  if (state.person) await showPerson(state.person.name, { keepView: true });
+  render();
+  loadPeople();
+  if (viewerOpen() && list === viewer.list) { // back in this slideshow, shown
+    list.splice(Math.min(index, list.length), 0, p);
+    viewer.i = list.indexOf(p);
+    showInViewer();
+  }
+  if (viewerOpen()) showToast(`${p.name.split('/').pop()} remise en place`);
+}
+function showToast(text, undo) {
+  const toast = $('viewer').querySelector('.v-toast');
+  toast.querySelector('span').textContent = text;
+  toast.querySelector('button').hidden = !undo; // a plain message has no "Annuler"
+  toast.querySelector('button').onclick = (e) => { e.stopPropagation(); toast.hidden = true; clearTimeout(toastTimer); undo?.(); };
+  toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.hidden = true; }, 8000);
 }
 
 /* ---------- People: name the faces in the slideshow (👤 or f) ---------- */
@@ -1102,6 +1237,10 @@ $('viewer').querySelector('.v-stage').addEventListener('pointerup', (e) => {
 document.addEventListener('keydown', (e) => {
   if (!viewerOpen() || e.target.tagName === 'INPUT') return;
   if (e.key === 'f') { toggleFaces(); wakeViewer(); return; }
+  if (e.key === 'Delete') { deleteShown(); wakeViewer(); return; }
+  if (e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+    e.preventDefault(); undoDelete(); wakeViewer(); return;
+  }
   if (e.key === 'ArrowLeft') step(-1);
   else if (e.key === 'ArrowRight') step(1);
   else if (e.key === ' ' && e.target.tagName !== 'VIDEO') {
@@ -1396,6 +1535,9 @@ $('prev-month').onclick = () => shiftMonth(-1);
 $('next-month').onclick = () => shiftMonth(1);
 document.addEventListener('keydown', (e) => {
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || viewerOpen()) return; // the viewer has its own keys
+  if (e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey) && !e.shiftKey && deletions.length) {
+    e.preventDefault(); return undoDelete(); // a photo deleted in a slideshow now closed
+  }
   if (e.key === 'ArrowLeft' && !datesFolded()) stepDay(-1); // folded "Dates": no day to step
   if (e.key === 'ArrowRight' && !datesFolded()) stepDay(1);
   if (e.key === 'd' && !e.ctrlKey && !e.metaKey && !e.altKey && !$('photos').hidden) return openViewer(); // diaporama
@@ -1413,6 +1555,7 @@ document.addEventListener('keydown', (e) => {
   syncOutputs();
   state.days = await (await fetch('api/days')).json();
   loadPeople();
+  loadAdmin();
   fillYears();
   $('count').textContent = `${state.days.length} jour${state.days.length > 1 ? 's' : ''}`;
   const fromHash = location.hash.slice(1).split(',').filter((d) => state.days.includes(d));

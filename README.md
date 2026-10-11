@@ -46,6 +46,7 @@ install it as a systemd user service:
 
     tools/install_service.sh              # --linger: also when not logged in
     tools/install_service.sh --password   # ask a password for other devices
+    tools/install_service.sh --admin-password  # allow deleting photos (see below)
     systemctl --user restart souvenir     # after changing server.py
     journalctl --user -u souvenir -f      # its messages
     tools/install_service.sh --uninstall
@@ -138,6 +139,30 @@ Your names and corrections are kept in `data/people.json`, each with its face
 vector, so they survive a new run of `find_faces.py`. Face vectors are
 biometric data: they stay on your machines like the rest.
 
+## Deleting photos
+
+With an admin password (`SOUVENIR_ADMIN_PASSWD`, `--admin-password`, or
+`tools/install_service.sh --admin-password`, which stores it in
+`~/.config/souvenir/env` next to the access password), the slideshow has a 🗑
+button and the `Suppr` key: the first time asks the admin password (then 30 min
+without asking again; 🔓 logs out). A deleted photo is not erased: it is moved
+to `data/trash/` (same subfolders), with "Annuler" for a few seconds; Ctrl+Z (⌘Z)
+undoes the last deletion at any time, then the one before, and so on. Empty
+`data/trash/` yourself when sure (`rm -r data/trash`). Without an admin
+password, nothing can be deleted from the site.
+
+A deleted photo keeps its preview and face images in `cache/`, so that putting
+it back is instant. After emptying the trash, clean up:
+
+    rm -r data/trash             # when sure
+    tools/find_faces.py          # forgets the faces of photos that are gone
+    tools/embed_photos.py …      # forgets their search vectors
+    make clean-cache             # removes previews and face images of photos gone
+
+`make clean-cache` (`tools/clean_cache.py`, `--dry-run` to only list) removes
+from `cache/thumbs/` and `cache/face_crops/` what belongs to no photo of
+`data/photos/` nor `data/trash/`. Everything removed is remade when needed.
+
 ## Keyboard shortcuts
 
 | Key | Action |
@@ -147,6 +172,8 @@ biometric data: they stay on your machines like the rest.
 | Home / End | first / last photo of the panel |
 | d | full-screen slideshow (diaporama) of the panel's photos |
 | f | in the slideshow: show the faces, to name people |
+| Suppr | in the slideshow: move the photo to `data/trash/` (admin password) |
+| Ctrl+Z | undo the last deletion (again: the one before…) |
 
 In the slideshow: ← → previous / next photo, Space starts or stops automatic
 playback (5 s per photo), Esc closes.
@@ -216,6 +243,7 @@ souvenir/
     ├── dedup.py       find and remove duplicate files
     ├── embed_photos.py  turn photos into vectors for the search
     ├── find_faces.py  find faces and turn them into vectors
+    ├── clean_cache.py  remove cache files of photos that are gone (make clean-cache)
     └── build_timezones.py  build tiles/timezones.bin (time zone of each place)
 ```
 

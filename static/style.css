@@ -117,6 +117,18 @@ body.resizing { cursor: col-resize; user-select: none; }
   padding: 4px 12px; opacity: 1; background: #374151;
 }
 #viewer .v-ask button[type="submit"] { background: #2563eb; }
+#viewer .v-admin-error { color: #fca5a5; font-size: 13px; }
+#viewer .v-admin-error:empty { display: none; }
+#viewer .v-toast {
+  position: absolute; z-index: 2; left: 50%; top: 20px; transform: translateX(-50%);
+  background: rgba(20, 20, 20, .92); color: #fff; padding: 8px 8px 8px 14px; border-radius: 8px;
+  display: flex; align-items: center; gap: 12px; font-size: 14px;
+}
+#viewer .v-toast[hidden] { display: none; }
+#viewer .v-toast button {
+  position: static; width: auto; height: auto; border-radius: 6px; font-size: 14px;
+  padding: 4px 12px; opacity: 1; background: #2563eb;
+}
 #people-title { cursor: pointer; user-select: none; }
 #people-title:hover { color: var(--fg); }
 #people-title .fold { display: inline-block; width: 1em; }

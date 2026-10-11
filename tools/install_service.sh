@@ -7,6 +7,8 @@
 #   tools/install_service.sh --password       ask a password for other devices (typed
 #                                             here, kept in ~/.config/souvenir/env, mode 600)
 #   tools/install_service.sh --no-password    remove that password
+#   tools/install_service.sh --admin-password  ask a password for deleting photos (to data/trash)
+#   tools/install_service.sh --no-admin-password  remove it (no deleting)
 #   tools/install_service.sh --linger         also run when you are not logged in
 #   tools/install_service.sh --dry-run        only print the service file
 #   tools/install_service.sh --uninstall      stop and remove the service
@@ -22,7 +24,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 UNIT_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 UNIT=$UNIT_DIR/$NAME.service
 
-action=install linger=0 password=keep server_args=()
+action=install linger=0 password=keep admin=keep server_args=()
 ENV_FILE=${XDG_CONFIG_HOME:-$HOME/.config}/$NAME/env  # SOUVENIR_PASSWORD, read by the service
 while (($#)); do
     case $1 in
@@ -31,7 +33,9 @@ while (($#)); do
         --linger) linger=1 ;;
         --password) password=ask ;;
         --no-password) password=remove ;;
-        -h | --help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --admin-password) admin=ask ;;
+        --no-admin-password) admin=remove ;;
+        -h | --help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         --) shift; server_args=("$@"); break ;;
         *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
     esac
@@ -81,18 +85,39 @@ systemctl --user show-environment >/dev/null 2>&1 || {
     exit 1
 }
 
-if [[ $password == ask ]]; then
-    read -rsp "Password for other devices: " pw1; echo
-    read -rsp "Same password again: " pw2; echo
-    [[ -n $pw1 && $pw1 == "$pw2" ]] || { echo "Passwords empty or different, nothing changed." >&2; exit 1; }
+# The env file holds one line per secret (SOUVENIR_PASSWORD, SOUVENIR_ADMIN_PASSWD,
+# SOUVENIR_API_KEY…): each option changes only its own line.
+set_env() { # KEY VALUE
+    local value=${2//\\/\\\\}
+    value=${value//\"/\\\"}  # escape \ and " for systemd
     mkdir -p "$(dirname "$ENV_FILE")"
-    umask 077
-    pw1=${pw1//\\/\\\\}; pw1=${pw1//\"/\\\"}  # escape \ and " for systemd
-    printf 'SOUVENIR_PASSWORD="%s"\n' "$pw1" >"$ENV_FILE"
-    chmod 600 "$ENV_FILE"
+    (umask 077 && { grep -v "^$1=" "$ENV_FILE" 2>/dev/null; printf '%s="%s"\n' "$1" "$value"; } >"$ENV_FILE.tmp")
+    mv "$ENV_FILE.tmp" "$ENV_FILE" && chmod 600 "$ENV_FILE"
+}
+unset_env() { # KEY
+    [[ -f $ENV_FILE ]] || return 0
+    (umask 077 && grep -v "^$1=" "$ENV_FILE" >"$ENV_FILE.tmp" || true)
+    mv "$ENV_FILE.tmp" "$ENV_FILE" && chmod 600 "$ENV_FILE"
+}
+ask_twice() { # PROMPT -> $answer
+    local again
+    read -rsp "$1: " answer; echo
+    read -rsp "Same password again: " again; echo
+    [[ -n $answer && $answer == "$again" ]] || { echo "Passwords empty or different, nothing changed." >&2; exit 1; }
+}
+if [[ $password == ask ]]; then
+    ask_twice "Password for other devices"
+    set_env SOUVENIR_PASSWORD "$answer"
     echo "Password saved in $ENV_FILE (readable by you only)."
 elif [[ $password == remove ]]; then
-    rm -f "$ENV_FILE" && echo "Password removed: the site is open to the network again."
+    unset_env SOUVENIR_PASSWORD && echo "Password removed: the site is open to the network again."
+fi
+if [[ $admin == ask ]]; then
+    ask_twice "Admin password (to delete photos)"
+    set_env SOUVENIR_ADMIN_PASSWD "$answer"
+    echo "Admin password saved in $ENV_FILE: deleted photos go to data/trash."
+elif [[ $admin == remove ]]; then
+    unset_env SOUVENIR_ADMIN_PASSWD && echo "Admin password removed: photos can no longer be deleted."
 fi
 
 mkdir -p "$UNIT_DIR"

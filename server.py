@@ -23,7 +23,10 @@ import json
 import mimetypes
 import os
 import re
+import secrets
+import shutil
 import sys
+import threading
 import time
 import xml.etree.ElementTree as ET
 import zipfile
@@ -189,6 +192,11 @@ class Handler(SimpleHTTPRequestHandler):
     photo_dir = None
     photo_index = None  # photos.PhotoIndex
     password = None     # asked from other devices (HTTP Basic auth); None = open
+    admin_password = None  # unlocks deleting photos (moved to trash_dir); None = no admin
+    trash_dir = None
+    admin_sessions = {}    # token -> expiry time (admin cookie)
+    admin_lock = threading.Lock()
+    ADMIN_IDLE = 30 * 60   # an admin session ends after 30 min without admin action
     search = None       # search.Search: photos by meaning
     people = None       # people.People: names of the faces
 
@@ -234,9 +242,11 @@ class Handler(SimpleHTTPRequestHandler):
         if str(getattr(code, "value", code)).startswith(("4", "5")):
             super().log_request(code, size)
 
-    def send_json(self, obj):
+    def send_json(self, obj, cookie=None):
         body = json.dumps(obj, separators=(",", ":")).encode()
         self.send_response(HTTPStatus.OK)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -274,9 +284,13 @@ class Handler(SimpleHTTPRequestHandler):
             inside = [p for p in found if p["lat"] is not None
                       and s <= p["lat"] <= n and w <= p["lon"] <= e]
             return self.send_json({"total": len(found), "photos": inside})
+        if url.path == "/api/admin":
+            return self.send_json({"enabled": bool(self.admin_password), "logged": self.is_admin()})
         if url.path == "/api/people":  # ?days=…: count each person's photos on those days
             days = [d for d in parse_qs(url.query).get("days", [""])[0].split(",") if d]
-            among = self.photo_index.names_of_days(days) if days else None
+            # Only photos still there (a deleted photo's faces stay in cache/faces.* until
+            # tools/find_faces.py runs again).
+            among = self.photo_index.names_of_days(days) if days else set(self.photo_index.by_name)
             return self.send_json({"available": self.people.available(), "people": self.people.people(among)})
         if url.path == "/api/faces":
             photo = parse_qs(url.query).get("photo", [""])[0]
@@ -308,6 +322,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/people/aliases":
             return self.post_aliases()
+        if path.startswith("/api/admin/") or path in ("/api/photos/delete", "/api/photos/restore"):
+            return self.post_admin(path)
         if path not in ("/api/people/name", "/api/people/refuse"):
             return self.send_error(HTTPStatus.NOT_FOUND)
         try:
@@ -340,6 +356,77 @@ class Handler(SimpleHTTPRequestHandler):
         except (ValueError, KeyError, TypeError) as e:
             return self.send_json_status(HTTPStatus.BAD_REQUEST, {"error": str(e).strip("'\"")})
         return self.send_json({"ok": True, "name": name, "aliases": aliases})
+
+    # ---------- admin: deleting photos (moved to the trash, never erased) ----------
+
+    def is_admin(self):
+        """A valid admin cookie (renewed by each admin action)."""
+        cookie = self.headers.get("Cookie", "")
+        m = re.search(r"(?:^|;\s*)souvenir_admin=([\w-]+)", cookie)
+        if not m or not self.admin_password:
+            return False
+        with self.admin_lock:
+            expiry = self.admin_sessions.get(m.group(1))
+            if not expiry or expiry < time.time():
+                self.admin_sessions.pop(m.group(1), None)
+                return False
+            self.admin_sessions[m.group(1)] = time.time() + self.ADMIN_IDLE
+            return True
+
+    def post_admin(self, path):
+        """/api/admin/login {password}, /api/admin/logout, and for an admin:
+        /api/photos/delete {name} (moved to the trash), /api/photos/restore {name, trash}."""
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            if length > 10_000:
+                raise ValueError("body size")
+            body = json.loads(self.rfile.read(length)) if length else {}
+        except ValueError as e:
+            return self.send_json_status(HTTPStatus.BAD_REQUEST, {"error": str(e)})
+        if not self.admin_password:
+            return self.send_json_status(HTTPStatus.FORBIDDEN, {"error": "no admin password set on the server"})
+        if path == "/api/admin/login":
+            if not hmac.compare_digest(str(body.get("password", "")).encode(), self.admin_password.encode()):
+                time.sleep(1)  # a wrong password costs a second: guessing is slow
+                return self.send_json_status(HTTPStatus.FORBIDDEN, {"error": "wrong admin password"})
+            token = secrets.token_urlsafe(32)
+            with self.admin_lock:
+                now = time.time()
+                for t in [t for t, e in self.admin_sessions.items() if e < now]:
+                    del self.admin_sessions[t]
+                self.admin_sessions[token] = now + self.ADMIN_IDLE
+            return self.send_json({"ok": True}, cookie=f"souvenir_admin={token}; Path=/; HttpOnly; SameSite=Strict")
+        if path == "/api/admin/logout":
+            m = re.search(r"(?:^|;\s*)souvenir_admin=([\w-]+)", self.headers.get("Cookie", ""))
+            with self.admin_lock:
+                self.admin_sessions.pop(m.group(1) if m else "", None)
+            return self.send_json({"ok": True}, cookie="souvenir_admin=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict")
+        if not self.is_admin():
+            return self.send_json_status(HTTPStatus.FORBIDDEN, {"error": "admin login needed", "login": True})
+        name = str(body.get("name", ""))
+        try:
+            if path == "/api/photos/delete":
+                if not self.photo_index.get(name):
+                    raise ValueError("unknown photo")
+                dst = os.path.join(self.trash_dir, name)
+                base, ext = os.path.splitext(dst)
+                n = 2
+                while os.path.exists(dst):  # never overwrite something already in the trash
+                    dst, n = f"{base} ({n}){ext}", n + 1
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.move(os.path.join(self.photo_dir, name), dst)
+                return self.send_json({"ok": True, "trash": os.path.relpath(dst, self.trash_dir)})
+            # restore: put a photo of the trash back where it was ("Annuler")
+            src = os.path.realpath(os.path.join(self.trash_dir, str(body.get("trash", ""))))
+            dst = os.path.realpath(os.path.join(self.photo_dir, name))
+            if (not src.startswith(os.path.realpath(self.trash_dir) + os.sep) or not os.path.isfile(src)
+                    or not dst.startswith(os.path.realpath(self.photo_dir) + os.sep) or os.path.exists(dst)):
+                raise ValueError("nothing to restore")
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.move(src, dst)
+            return self.send_json({"ok": True})
+        except (ValueError, OSError) as e:
+            return self.send_json_status(HTTPStatus.BAD_REQUEST, {"error": str(e)})
 
     def send_json_status(self, status, obj):
         body = json.dumps(obj).encode()
@@ -512,6 +599,9 @@ def main():
     p.add_argument("--password",
                    help="password asked from other devices (this computer is never asked); "
                         "default: $SOUVENIR_PASSWORD, else none")
+    p.add_argument("--admin-password",
+                   help="password to delete photos (moved to DATA/trash); "
+                        "default: $SOUVENIR_ADMIN_PASSWD, else no deleting")
     p.add_argument("--embed-api",
                    help="OpenAI-compatible API of the embedding model used for search "
                         "(e.g. vLLM on a GPU); default: llama.cpp on this CPU (make search)")
@@ -527,6 +617,8 @@ def main():
                  f"(ss -ltnp | grep :{args.port})")
     Handler.search = search.Search(args.embed_api, args.embed_key or os.environ.get("SOUVENIR_API_KEY"))
     Handler.password = args.password or os.environ.get("SOUVENIR_PASSWORD") or None
+    Handler.admin_password = args.admin_password or os.environ.get("SOUVENIR_ADMIN_PASSWD") or None
+    Handler.trash_dir = os.path.abspath(os.path.join(args.data, "trash"))
     Handler.gps_dir = os.path.abspath(args.gps or os.path.join(args.data, "gps"))
     Handler.photo_dir = os.path.abspath(args.photos or os.path.join(args.data, "photos"))
     if not os.path.isdir(Handler.gps_dir) and not os.path.isdir(Handler.photo_dir):
@@ -564,6 +656,8 @@ def main():
               "warning: no password, every device on the network can see the site (see --password)")
     else:
         print(f"Open http://{args.host}:{args.port}/")
+    print(f"Admin: deleting photos moves them to {Handler.trash_dir}" if Handler.admin_password else
+          "Admin: off (no admin password: set SOUVENIR_ADMIN_PASSWD to delete photos)")
     httpd.serve_forever()
 
 

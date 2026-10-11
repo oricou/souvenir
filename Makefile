@@ -5,6 +5,7 @@
 #   make search    llama.cpp (CPU) and the search model (~1.9 GB), started by the server
 #   make faces     OpenCV (in .venv/) and the face models (~40 MB) for tools/find_faces.py
 #   make service   install the souvenir service, or start it, or restart it
+#   make clean-cache  remove the previews and face images of photos that are gone
 #   make help      this list
 #
 # Each file is only made if missing; delete it to make it again. Maps come from
@@ -44,7 +45,7 @@ BUILD ?= $(shell for d in 0 1 2 3 4 5 6; do b=$$(date -d "-$$d day" +%Y%m%d); \
 	curl -sfI https://build.protomaps.com/$$b.pmtiles >/dev/null && echo $$b && break; done)
 PLANET = https://build.protomaps.com/$(BUILD).pmtiles
 
-.PHONY: install france search faces run service help
+.PHONY: install france search faces run service clean-cache help
 .DELETE_ON_ERROR:
 
 # Search queries run on this CPU (llama.cpp, see make search). To use a GPU model
@@ -106,8 +107,11 @@ service:
 		journalctl --user -u $(SERVICE) -n 15 --no-pager -o cat; \
 		exit 1; \
 	fi
+clean-cache:
+	python3 tools/clean_cache.py
+
 help:
-	@sed -n '2,11p' Makefile | sed 's/^# \{0,1\}//'
+	@sed -n '2,12p' Makefile | sed 's/^# \{0,1\}//'
 
 $(PMTILES):
 	@mkdir -p tools

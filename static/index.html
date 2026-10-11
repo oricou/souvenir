@@ -213,9 +213,27 @@
           <button type="button" class="v-ask-cancel">Annuler</button>
         </div>
       </form>
+      <form class="v-ask v-admin" hidden>
+        <label
+          >Mot de passe admin
+          <input type="password" name="pw" autocomplete="current-password"
+        /></label>
+        <div>
+          <button type="submit">OK</button>
+          <button type="button" class="v-admin-cancel">Annuler</button>
+        </div>
+        <span class="v-admin-error"></span>
+      </form>
+      <div class="v-toast" hidden>
+        <span></span><button type="button">Annuler</button>
+      </div>
       <button class="v-prev" title="Précédente (←)">‹</button>
       <button class="v-next" title="Suivante (→)">›</button>
       <div class="v-top">
+        <button class="v-delete" title="Mettre à la corbeille (touche Suppr)" hidden>
+          🗑
+        </button>
+        <button class="v-lock" title="Quitter le mode admin" hidden>🔓</button>
         <button
           class="v-faces"
           title="Visages : nommer les personnes (touche f)"
