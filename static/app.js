@@ -586,8 +586,8 @@ function renderPhotos() {
     } else {
       media.style.aspectRatio = '4 / 3';
     }
-    media.onclick = () => showPhotoOnMap(p);
-    media.ondblclick = () => window.open(photoUrl(p.name), '_blank', 'noopener'); // same as "ouvrir ↗"
+    media.onclick = () => (onPhone() ? photoTap(p) : showPhotoOnMap(p));
+    media.ondblclick = () => { if (!onPhone()) window.open(photoUrl(p.name), '_blank', 'noopener'); }; // same as "ouvrir ↗"
     media.title = 'Clic : voir sur la carte · double-clic : ouvrir';
     const cap = document.createElement('figcaption');
     const when = document.createElement('b');
@@ -764,6 +764,20 @@ function showPhotoOnMap(p) {
   highlightPhoto(p.name);
   const at = locatePhoto(p);
   if (at) map.flyTo({ center: [at.lon, at.lat], zoom: Math.max(map.getZoom(), 15), duration: 800 });
+}
+
+/** Phones: a tap on a photo of the panel opens the slideshow there, a double-tap
+    shows it on the map (the first tap waits to know which). */
+let photoTapTimer = null, photoTapped = null;
+function photoTap(p) {
+  clearTimeout(photoTapTimer);
+  if (photoTapped === p.name) { photoTapped = null; return showPhotoOnMap(p); }
+  photoTapped = p.name;
+  photoTapTimer = setTimeout(() => {
+    photoTapped = null;
+    highlightPhoto(p.name);
+    openViewer();
+  }, DOUBLE_MS);
 }
 
 /* ---------- Full-screen viewer: the panel's photos one by one ---------- */
@@ -1228,9 +1242,28 @@ $('viewer').querySelector('.v-play').onclick = (e) => {
   if (viewer.timer) stopAuto(); else startAuto();
 };
 $('viewer').addEventListener('mousemove', wakeViewer);
-// Click on the left / right half of a photo, or swipe, to move.
+// Click on the left / right half of a photo, or swipe, to move. On a touch screen:
+// pinch to zoom, one finger to move the zoomed photo. Double-click / double-tap:
+// back to the map, on this photo.
 let swipeX = null, drag = null, clickTimer = null;
-$('viewer').querySelector('.v-stage').addEventListener('pointerdown', (e) => {
+const touches = new globalThis.Map(); // pointerId → {x, y} of the fingers on the screen
+let pinch = null, pinched = false, lastTap = null, lastPointer = 'mouse';
+const DOUBLE_MS = 300;
+const fingers = () => {
+  const [a, b] = [...touches.values()];
+  return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+};
+const vStage = $('viewer').querySelector('.v-stage');
+vStage.addEventListener('pointerdown', (e) => {
+  lastPointer = e.pointerType;
+  if (e.pointerType !== 'mouse') touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (touches.size === 2) { // a second finger: pinch, neither swipe nor tap
+    pinch = fingers(); pinched = true;
+    drag = null; swipeX = null; lastTap = null;
+    clearTimeout(clickTimer);
+    return;
+  }
+  if (pinched) return;
   swipeX = e.clientX;
   if (viewer.zoom.z > 1 && e.button === 0) { // zoomed: dragging moves the photo
     e.preventDefault(); // no text selection, no browser image drag
@@ -1240,8 +1273,19 @@ $('viewer').querySelector('.v-stage').addEventListener('pointerdown', (e) => {
 });
 // The browser's own image drag (to drop the photo elsewhere) would take the pointer
 // after a few pixels and stop ours (pointercancel): not in the slideshow.
-$('viewer').querySelector('.v-stage').addEventListener('dragstart', (e) => e.preventDefault());
-$('viewer').querySelector('.v-stage').addEventListener('pointermove', (e) => {
+vStage.addEventListener('dragstart', (e) => e.preventDefault());
+vStage.addEventListener('pointermove', (e) => {
+  if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinch && touches.size >= 2) {
+    const now = fingers();
+    zoomAt(now.x, now.y, now.d / pinch.d); // spread / close the fingers
+    viewer.zoom.x += now.x - pinch.x; // and move them together
+    viewer.zoom.y += now.y - pinch.y;
+    clampZoom();
+    applyZoom();
+    pinch = now;
+    return;
+  }
   if (!drag) return;
   if (!(e.buttons & 1)) { drag = null; return; } // the button is no longer held: not dragging
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -1252,24 +1296,45 @@ $('viewer').querySelector('.v-stage').addEventListener('pointermove', (e) => {
   clampZoom();
   applyZoom();
 });
-// The browser took the pointer back (button released elsewhere…): stop dragging.
-for (const type of ['lostpointercapture', 'pointercancel']) {
-  $('viewer').querySelector('.v-stage').addEventListener(type, () => { drag = null; });
+/** A finger left the screen: after a pinch, wait for all of them before anything else. */
+function fingerUp(e) {
+  touches.delete(e.pointerId);
+  if (touches.size < 2) pinch = null;
+  if (!pinched) return false;
+  if (touches.size === 0) pinched = false;
+  drag = null; swipeX = null;
+  return true;
 }
-$('viewer').querySelector('.v-stage').addEventListener('pointerup', (e) => {
-  if (drag) { drag = null; swipeX = null; return; } // zoomed: no change of photo
+// The browser took the pointer back (button released elsewhere…): stop dragging.
+vStage.addEventListener('lostpointercapture', () => { drag = null; });
+vStage.addEventListener('pointercancel', (e) => { fingerUp(e); drag = null; });
+vStage.addEventListener('pointerup', (e) => {
+  if (fingerUp(e)) return;
+  const wasDrag = !!drag, moved = wasDrag && drag.moved;
+  drag = null;
   if (swipeX === null || e.target.tagName === 'VIDEO') return; // video: its own controls
   const dx = e.clientX - swipeX;
   swipeX = null;
-  if (Math.abs(dx) > 50) return step(dx < 0 ? 1 : -1); // a swipe: at once
-  // A click changes photo a little later: the first click of a double-click (zoom) must not.
+  if (moved) return; // zoomed: the photo was moved, no change of photo
+  if (!wasDrag && Math.abs(dx) > 50) return step(dx < 0 ? 1 : -1); // a swipe: at once
+  if (e.pointerType !== 'mouse') { // double-tap: show on the map (a mouse has dblclick)
+    const t = Date.now();
+    if (lastTap && t - lastTap.t < DOUBLE_MS && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) {
+      lastTap = null;
+      clearTimeout(clickTimer); // the first tap was not a tap to change photo
+      return closeViewer(); // which shows the photo on the map
+    }
+    lastTap = { t, x: e.clientX, y: e.clientY };
+  }
+  if (wasDrag) return; // zoomed: a click does not change photo
+  // A click changes photo a little later: the first click of a double-click must not.
   const dir = e.clientX < window.innerWidth / 2 ? -1 : 1;
   clearTimeout(clickTimer);
-  clickTimer = setTimeout(() => step(dir), 250);
+  clickTimer = setTimeout(() => step(dir), DOUBLE_MS);
 });
 
-/* ---------- Zoom in the slideshow: wheel (towards the cursor), double-click, drag,
-   Shift+arrows. The photo starts unzoomed; ← → still change photo. ---------- */
+/* ---------- Zoom in the slideshow: wheel (towards the cursor), drag, Shift+arrows,
+   pinch. The photo starts unzoomed; ← → still change photo. ---------- */
 
 const ZOOM_MAX = 8, ZOOM_STEP = 1.2;
 viewer.zoom = { z: 1, x: 0, y: 0 }; // scale, and translation in px of the photo's top-left
@@ -1314,9 +1379,9 @@ $('viewer').querySelector('.v-stage').addEventListener('wheel', (e) => {
   e.preventDefault();
   zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
 }, { passive: false });
-$('viewer').querySelector('.v-stage').addEventListener('dblclick', (e) => {
+$('viewer').querySelector('.v-stage').addEventListener('dblclick', () => {
   clearTimeout(clickTimer); // it was not a click to change photo
-  if (viewer.zoom.z > 1) zoomAt(e.clientX, e.clientY, 1 / viewer.zoom.z); else zoomAt(e.clientX, e.clientY, 2.5);
+  if (lastPointer === 'mouse') closeViewer(); // shows the photo on the map (touch: on pointerup)
 });
 /** Shift+arrows: move the zoomed photo by a sixth of the screen. */
 function panZoom(dx, dy) {
