@@ -494,7 +494,7 @@ function render(fit = false) {
     map.getSource('ends').setData({ type: 'FeatureCollection', features: ends });
     map.getSource('stays').setData({ type: 'FeatureCollection', features: stays });
     map.getSource('photos').setData({ type: 'FeatureCollection', features: shownPhotos });
-    if (fit && !bounds.isEmpty()) map.fitBounds(bounds, { padding: 60, maxZoom: 16, duration: 600 });
+    if (fit && !showHere() && !bounds.isEmpty()) map.fitBounds(bounds, { padding: 60, maxZoom: 16, duration: 600 });
   });
   renderPhotos();
   renderCalendar();
