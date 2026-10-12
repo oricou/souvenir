@@ -112,11 +112,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .v-ask[hidden] { display: none; }
 .v-ask input { font: inherit; padding: 4px 8px; margin-left: 6px; width: 160px; }
 .v-ask div { display: flex; gap: 8px; flex-wrap: wrap; }
-.v-ask button {
+.v-ask button, #viewer .v-ask button { /* #viewer: wins over "#viewer button" */
   position: static; border: none; color: #fff; cursor: pointer; width: auto; height: auto; border-radius: 6px; font-size: 14px;
   padding: 4px 12px; opacity: 1; background: #374151;
 }
-.v-ask button[type="submit"] { background: #2563eb; }
+.v-ask button[type="submit"], #viewer .v-ask button[type="submit"] { background: #2563eb; }
 .v-admin-error { color: #fca5a5; font-size: 13px; }
 .v-admin-error:empty { display: none; }
 .v-toast {
