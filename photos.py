@@ -5,7 +5,8 @@ MP4/MOV videos), falling back to Pixel-style names (PXL_YYYYMMDD_HHMMSSmmm,
 in UTC). GPS coordinates are read from EXIF when the camera recorded them;
 otherwise the page places the photo on the day's trace from its time.
 
-Where a photo was taken: its EXIF GPS if any, otherwise the day's trace at
+Where a photo was taken: its EXIF GPS if any (an admin can write one by
+dragging the photo on the map, see write_gps()), otherwise the day's trace at
 that time (see locate()). Positions are stored with the trace file's signature
 and recomputed only when that trace changes.
 
@@ -278,15 +279,32 @@ class PhotoIndex:
             dirty = dirty or files.keys() != self.files.keys()
             self.dirs, self.files = dirs, files
             self.positions = {n: p for n, p in self.positions.items() if n in files}
-            self.by_name = {n: f["meta"] for n, f in files.items() if f["meta"]}
-            by_day = {}
-            for m in self.by_name.values():
-                by_day.setdefault(m["day"], []).append(m)
-            for lst in by_day.values():
-                lst.sort(key=lambda m: m["t"])
-            self.by_day = by_day
+            self._build()
             if dirty:
                 self._save()
+
+    def _build(self):
+        """by_name and by_day from self.files (lock held)."""
+        self.by_name = {n: f["meta"] for n, f in self.files.items() if f["meta"]}
+        by_day = {}
+        for m in self.by_name.values():
+            by_day.setdefault(m["day"], []).append(m)
+        for lst in by_day.values():
+            lst.sort(key=lambda m: m["t"])
+        self.by_day = by_day
+
+    def reread(self, name):
+        """Read a photo's metadata again, whatever its date and size: after write_gps(),
+        which keeps the date, a second position takes as many bytes as the first one,
+        so refresh() would not see the change."""
+        self.refresh()
+        path = os.path.join(self.photo_dir, name)
+        st = os.stat(path)
+        meta = _meta(path, name)
+        with self.lock:
+            self.files[name] = {"mtime": st.st_mtime, "size": st.st_size, "meta": meta}
+            self._build()
+            self._save()
 
     def _save(self):
         os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
@@ -347,6 +365,70 @@ class PhotoIndex:
 
     def __len__(self):
         return len(self.by_name)
+
+
+def data_size(path):
+    """Size of a file without its metadata, so that writing tags (a GPS position…)
+    does not change it while the image stays the same. For a JPEG: without its APPn
+    (EXIF, XMP…) and COM segments; other files: their whole size."""
+    size = os.path.getsize(path)
+    if os.path.splitext(path)[1].lower() not in (".jpg", ".jpeg"):
+        return size
+    meta = 0
+    with open(path, "rb") as f:
+        if f.read(2) != b"\xff\xd8":
+            return size
+        while True:  # the segments before the image data, each "FF xx" + its length
+            if f.read(1) != b"\xff":
+                return size  # not as expected: count everything
+            m = f.read(1)
+            while m == b"\xff":  # fill bytes
+                m = f.read(1)
+            if not m or m[0] in (0xDA, 0xD9):  # start of scan: the image data follows
+                break
+            if m[0] == 0x01 or 0xD0 <= m[0] <= 0xD8:  # markers without a length
+                continue
+            n = int.from_bytes(f.read(2), "big")
+            if n < 2:
+                return size
+            if 0xE0 <= m[0] <= 0xEF or m[0] == 0xFE:
+                meta += n + 2
+            f.seek(n - 2, 1)
+    return size - meta
+
+
+def same_image(path, old, now):
+    """Whether a cache entry made from a photo (old: its "mtime", "size" and "dsize")
+    still holds for the file at path, now {"mtime", "size"}: same date and size, or
+    same date and same data_size() (only tags were written, by write_gps() for one).
+    Sets now["dsize"], computed only when needed."""
+    if old.get("mtime") != now["mtime"]:
+        return False
+    if old.get("size") == now["size"]:
+        now["dsize"] = old.get("dsize") or data_size(path)
+        return True
+    now["dsize"] = data_size(path)
+    return old.get("dsize") == now["dsize"]
+
+
+def write_gps(path, lat, lon):
+    """Write a GPS position into a photo's EXIF with ExifTool (lat None: remove it).
+    The file keeps its date, and its image data is not touched (same data_size()):
+    tools/embed_photos.py and tools/find_faces.py see it as the same photo."""
+    exiftool = shutil.which("exiftool")
+    if not exiftool:
+        raise RuntimeError("ExifTool is missing: sudo apt install libimage-exiftool-perl")
+    if lat is None:
+        tags = ["-gps:all="]
+    else:
+        tags = [f"-GPSLatitude={abs(lat):.7f}", f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}",
+                f"-GPSLongitude={abs(lon):.7f}", f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}"]
+    st = os.stat(path)
+    r = subprocess.run([exiftool, "-P", "-overwrite_original", "-m", "-q", *tags, path],
+                       capture_output=True, text=True, timeout=60)
+    if r.returncode:
+        raise RuntimeError(r.stderr.strip() or "exiftool failed")
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))  # -P keeps whole seconds only
 
 
 def thumbnail(photo_dir, name, cache_dir):

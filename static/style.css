@@ -104,29 +104,29 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 #viewer.idle .face { opacity: .35; }
 
-#viewer .v-ask {
-  position: absolute; z-index: 2; left: 50%; bottom: 70px; transform: translateX(-50%);
+.v-ask {
+  position: fixed; z-index: 1001; left: 50%; bottom: 70px; transform: translateX(-50%);
   background: rgba(20, 20, 20, .92); color: #fff; padding: 12px 14px; border-radius: 8px;
   display: flex; flex-direction: column; gap: 10px; min-width: 260px;
 }
-#viewer .v-ask[hidden] { display: none; }
-#viewer .v-ask input { font: inherit; padding: 4px 8px; margin-left: 6px; width: 160px; }
-#viewer .v-ask div { display: flex; gap: 8px; flex-wrap: wrap; }
-#viewer .v-ask button {
-  position: static; width: auto; height: auto; border-radius: 6px; font-size: 14px;
+.v-ask[hidden] { display: none; }
+.v-ask input { font: inherit; padding: 4px 8px; margin-left: 6px; width: 160px; }
+.v-ask div { display: flex; gap: 8px; flex-wrap: wrap; }
+.v-ask button {
+  position: static; border: none; color: #fff; cursor: pointer; width: auto; height: auto; border-radius: 6px; font-size: 14px;
   padding: 4px 12px; opacity: 1; background: #374151;
 }
-#viewer .v-ask button[type="submit"] { background: #2563eb; }
-#viewer .v-admin-error { color: #fca5a5; font-size: 13px; }
-#viewer .v-admin-error:empty { display: none; }
-#viewer .v-toast {
-  position: absolute; z-index: 2; left: 50%; top: 20px; transform: translateX(-50%);
+.v-ask button[type="submit"] { background: #2563eb; }
+.v-admin-error { color: #fca5a5; font-size: 13px; }
+.v-admin-error:empty { display: none; }
+.v-toast {
+  position: fixed; z-index: 1001; left: 50%; top: 20px; transform: translateX(-50%);
   background: rgba(20, 20, 20, .92); color: #fff; padding: 8px 8px 8px 14px; border-radius: 8px;
   display: flex; align-items: center; gap: 12px; font-size: 14px;
 }
-#viewer .v-toast[hidden] { display: none; }
-#viewer .v-toast button {
-  position: static; width: auto; height: auto; border-radius: 6px; font-size: 14px;
+.v-toast[hidden] { display: none; }
+.v-toast button {
+  position: static; border: none; color: #fff; cursor: pointer; width: auto; height: auto; border-radius: 6px; font-size: 14px;
   padding: 4px 12px; opacity: 1; background: #2563eb;
 }
 #people-title { cursor: pointer; user-select: none; }

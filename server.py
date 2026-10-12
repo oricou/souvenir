@@ -17,6 +17,7 @@ import argparse
 import base64
 import signal
 import csv
+import hashlib
 import hmac
 import io
 import json
@@ -25,6 +26,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -322,7 +324,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/people/aliases":
             return self.post_aliases()
-        if path.startswith("/api/admin/") or path in ("/api/photos/delete", "/api/photos/restore"):
+        if path.startswith("/api/admin/") or path in ("/api/photos/delete", "/api/photos/restore",
+                                                      "/api/photos/place"):
             return self.post_admin(path)
         if path not in ("/api/people/name", "/api/people/refuse"):
             return self.send_error(HTTPStatus.NOT_FOUND)
@@ -375,7 +378,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def post_admin(self, path):
         """/api/admin/login {password}, /api/admin/logout, and for an admin:
-        /api/photos/delete {name} (moved to the trash), /api/photos/restore {name, trash}."""
+        /api/photos/delete {name} (moved to the trash), /api/photos/restore {name, trash},
+        /api/photos/place {name, lat, lon} (GPS written into the photo; lat null: removed)."""
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
             if length > 10_000:
@@ -405,6 +409,20 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json_status(HTTPStatus.FORBIDDEN, {"error": "admin login needed", "login": True})
         name = str(body.get("name", ""))
         try:
+            if path == "/api/photos/place":
+                meta = self.photo_index.get(name)
+                if not meta:
+                    raise ValueError("unknown photo")
+                if meta["kind"] != "image":
+                    raise ValueError("only photos can be moved, not videos")
+                lat, lon = body.get("lat"), body.get("lon")
+                if lat is not None:
+                    lat, lon = float(lat), float(lon)
+                    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                        raise ValueError("lat/lon out of range")
+                photos.write_gps(os.path.join(self.photo_dir, name), lat, lon)
+                self.photo_index.reread(name)
+                return self.send_json({"ok": True, "photo": self.photo_index.photos_named([name]).get(name)})
             if path == "/api/photos/delete":
                 if not self.photo_index.get(name):
                     raise ValueError("unknown photo")
@@ -425,7 +443,7 @@ class Handler(SimpleHTTPRequestHandler):
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.move(src, dst)
             return self.send_json({"ok": True})
-        except (ValueError, OSError) as e:
+        except (ValueError, OSError, RuntimeError, subprocess.TimeoutExpired) as e:
             return self.send_json_status(HTTPStatus.BAD_REQUEST, {"error": str(e)})
 
     def send_json_status(self, status, obj):
@@ -634,7 +652,11 @@ def main():
         print(f"Maps: {', '.join(maps)}")
     print(f"Traces: {len(list_days(Handler.gps_dir))} day(s) in {Handler.gps_dir}")
     Handler.photo_index = photos.PhotoIndex(
-        Handler.photo_dir, PHOTO_INDEX, lambda day: get_track(Handler.gps_dir, day))
+        Handler.photo_dir,
+        # Another photo folder (a test…) gets its own index: never replaces the site's.
+        PHOTO_INDEX if Handler.photo_dir == os.path.join(ROOT, "data", "photos")
+        else f"{PHOTO_INDEX[:-5]}-{hashlib.sha1(Handler.photo_dir.encode()).hexdigest()[:10]}.json",
+        lambda day: get_track(Handler.gps_dir, day))
     print(f"Photos: {len(Handler.photo_index)} in {Handler.photo_dir}")
     # systemd stops services with SIGTERM: exit normally, so the search model
     # (a child process) is stopped too.

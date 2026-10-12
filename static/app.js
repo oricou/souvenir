@@ -225,6 +225,38 @@ mapReady.then(() => {
     if (onPhone()) setTab('photos'); // phones: show that photo in its panel
     highlightPhoto(e.features[0].properties.name, { scroll: true });
   });
+
+  // Admin: Ctrl+drag (⌘+drag) a photo to where it was really taken: written into its EXIF GPS.
+  map.on('mousedown', 'photos', (e) => {
+    const ev = e.originalEvent;
+    if (!(ev.ctrlKey || ev.metaKey) || ev.button !== 0 || !state.admin.enabled) return;
+    e.preventDefault(); // neither pan nor rotate (Ctrl+drag) the map
+    const { name, kind } = e.features[0].properties;
+    if (kind === 'video') return showToast('Les vidéos ne peuvent pas être déplacées.');
+    if (!state.admin.logged) return askAdmin(() => showToast('Mode admin : Ctrl+glisser une photo pour la déplacer.'));
+    const copies = photoCopies(name);
+    if (!copies.length) return;
+    const before = { lat: copies[0].lat, lon: copies[0].lon, exact: copies[0].exact };
+    let moved = false;
+    popup.remove();
+    map.getCanvas().style.cursor = 'grabbing';
+    const move = (m) => {
+      moved = true;
+      for (const p of copies) { p.lat = m.lngLat.lat; p.lon = m.lngLat.lng; }
+      map.getSource('photos').setData({ type: 'FeatureCollection', features: photoFeatures() });
+    };
+    map.on('mousemove', move);
+    map.once('mouseup', async (m) => {
+      map.off('mousemove', move);
+      map.getCanvas().style.cursor = '';
+      if (!moved) return;
+      const done = await placePhoto(name, m.lngLat.lat, m.lngLat.lng);
+      if (!done) return placeCopies(name, before); // refused: back where it was
+      const entry = { moved: true, name, before };
+      deletions.push(entry);
+      showToast(`${name.split('/').pop()} déplacée`, () => undoDelete(entry));
+    });
+  });
 });
 
 /* ---------- Helpers ---------- */
@@ -329,7 +361,8 @@ function photoInfo(p) {
   return `<img class="pop-img" src="${photoUrl(p.name, true)}" alt=""><br>` +
     `<b>${state.selected.length > 1 ? fmtShortDay(p.day) + ' ' : ''}${fmtTime(p.t, p.off)}</b>${tzLabel(p.t, p.off)}` +
     (p.kind === 'video' ? ' · vidéo' : '') +
-    (p.exact ? '' : '<br><span class="pop-note">position estimée d’après la trace</span>');
+    (p.exact ? '' : '<br><span class="pop-note">position estimée d’après la trace</span>') +
+    (state.admin.logged && p.kind !== 'video' ? '<br><span class="pop-note">Ctrl+glisser : déplacer</span>' : '');
 }
 
 /**
@@ -873,6 +906,41 @@ function showInViewer() {
 
 /* ---------- Admin: Suppr (or 🗑) moves the photo to data/trash, with "Annuler" ---------- */
 
+/** Every copy of this photo the page holds (days, search, person, "ici", slideshow). */
+function photoCopies(name) {
+  const lists = [...state.photos.values(), state.search?.photos, state.person?.photos, state.here.photos, viewer.list];
+  return [...new Set(lists.flatMap((l) => (l || []).filter((p) => p.name === name)))];
+}
+/** Put the page's copies of a photo at pos ({lat, lon, exact, off}) and redraw it. */
+function placeCopies(name, pos) {
+  for (const p of photoCopies(name)) {
+    for (const k of ['lat', 'lon', 'exact', 'off']) if (k in pos) p[k] = pos[k];
+  }
+  updatePhotos();
+  if (viewerOpen()) showInViewer();
+}
+/** Write a photo's GPS position on the server (lat null: remove it, back to the trace); true if done. */
+async function placePhoto(name, lat, lon) {
+  const { ok, data } = await postJSON('api/photos/place', { name, lat, lon });
+  if (!ok) {
+    if (data.login) { state.admin.logged = false; askAdmin(); }
+    else alert(`Impossible : ${data.error || ''}`);
+    return false;
+  }
+  if (data.photo) placeCopies(name, data.photo);
+  return true;
+}
+async function undoMove(entry) {
+  const { name, before } = entry;
+  // Its GPS as it was, or none if it was placed from the trace.
+  const done = await placePhoto(name, before.exact ? before.lat : null, before.exact ? before.lon : null);
+  if (!done) return;
+  deletions.splice(deletions.indexOf(entry), 1);
+  $('toast').hidden = true;
+  const at = photoCopies(name)[0];
+  if (at?.lat != null && !viewerOpen()) map.easeTo({ center: [at.lon, at.lat], duration: 400 });
+}
+
 async function loadAdmin() {
   try {
     const r = await fetch('api/admin');
@@ -884,10 +952,10 @@ async function postJSON(url, body) {
   return { ok: r.ok, data: await r.json().catch(() => ({})) };
 }
 
-/** Ask the admin password in the slideshow, then run `next` once logged in. */
+/** Ask the admin password (over the slideshow or the map), then run `next` once logged in. */
 let afterLogin = null;
 function askAdmin(next) {
-  const form = $('viewer').querySelector('.v-admin');
+  const form = $('admin-form');
   afterLogin = next;
   stopAuto();
   hideAsk();
@@ -897,7 +965,7 @@ function askAdmin(next) {
   form.pw.focus();
 }
 {
-  const form = $('viewer').querySelector('.v-admin');
+  const form = $('admin-form');
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const { ok, data } = await postJSON('api/admin/login', { password: form.pw.value });
@@ -963,15 +1031,13 @@ async function deleteShown() {
   showInViewer();
 }
 
-/* Deletions made since the page was opened, last one last: "Annuler" undoes its own,
-   Ctrl+Z (⌘Z) undoes the last one, again the one before, etc. */
+/* Deletions and moves (on the map) made since the page was opened, last one last:
+   "Annuler" undoes its own, Ctrl+Z (⌘Z) undoes the last one, again the one before, etc. */
 const deletions = [];
 async function undoDelete(entry = deletions[deletions.length - 1]) {
   if (!entry) return showToast('Rien à annuler.');
-  if (!state.admin.logged) { // the admin session expired: log in, then undo
-    if (viewerOpen()) return askAdmin(() => undoDelete(entry));
-    return alert('Session admin expirée : ouvrez le diaporama (touche d) puis refaites Ctrl+Z.');
-  }
+  if (!state.admin.logged) return askAdmin(() => undoDelete(entry)); // the admin session expired
+  if (entry.moved) return undoMove(entry);
   const { p, trash, index, list } = entry;
   const back = await postJSON('api/photos/restore', { name: p.name, trash });
   if (!back.ok) {
@@ -979,7 +1045,7 @@ async function undoDelete(entry = deletions[deletions.length - 1]) {
     return alert(`Impossible de la remettre : ${back.data.error || ''}`);
   }
   deletions.splice(deletions.indexOf(entry), 1);
-  $('viewer').querySelector('.v-toast').hidden = true;
+  $('toast').hidden = true;
   state.photos.delete(p.day); // reloaded, with it
   await load();
   if (state.search) await runSearch();
@@ -994,7 +1060,7 @@ async function undoDelete(entry = deletions[deletions.length - 1]) {
   if (viewerOpen()) showToast(`${p.name.split('/').pop()} remise en place`);
 }
 function showToast(text, undo) {
-  const toast = $('viewer').querySelector('.v-toast');
+  const toast = $('toast');
   toast.querySelector('span').textContent = text;
   toast.querySelector('button').hidden = !undo; // a plain message has no "Annuler"
   toast.querySelector('button').onclick = (e) => { e.stopPropagation(); toast.hidden = true; clearTimeout(toastTimer); undo?.(); };
@@ -1701,7 +1767,7 @@ $('next-month').onclick = () => shiftMonth(1);
 document.addEventListener('keydown', (e) => {
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || viewerOpen()) return; // the viewer has its own keys
   if (e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey) && !e.shiftKey && deletions.length) {
-    e.preventDefault(); return undoDelete(); // a photo deleted in a slideshow now closed
+    e.preventDefault(); return undoDelete(); // a photo deleted or moved
   }
   if (e.key === 'ArrowLeft' && !datesFolded()) stepDay(-1); // folded "Dates": no day to step
   if (e.key === 'ArrowRight' && !datesFolded()) stepDay(1);

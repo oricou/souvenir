@@ -12,7 +12,9 @@ CPU and are installed by `make faces` (OpenCV in .venv/, used automatically).
 Results: cache/faces.json (for each photo: its faces, with their box as fractions
 of the upright photo and the detection score) and cache/faces.f32 (one row per
 face, unit-length float32). Saved regularly: stop (Ctrl+C) and start again at
-will; only new or changed photos are done, deleted ones are forgotten.
+will; only new or changed photos are done, deleted ones are forgotten. A photo
+whose tags only changed (e.g. a GPS position written by the site) keeps its
+faces: same date and same size without metadata (photos.same_image()).
 Face vectors are biometric data: they stay in cache/, like the photos.
 """
 
@@ -105,7 +107,8 @@ def save(out, done):
         for fc in p["faces"]:
             faces.append({"box": fc["box"], "score": fc["score"], "row": len(rows)})
             rows.append(fc["vec"])
-        meta["photos"][name] = {"mtime": p["mtime"], "size": p["size"], "faces": faces}
+        meta["photos"][name] = {"mtime": p["mtime"], "size": p["size"], "dsize": p.get("dsize"),
+                                "faces": faces}
     np.asarray(rows, dtype="<f4").reshape(-1, DIM).tofile(out + ".f32.tmp")
     with open(out + ".json.tmp", "w", encoding="utf-8") as f:
         json.dump(meta, f, separators=(",", ":"))
@@ -164,22 +167,30 @@ def main():
     current = {}
     for name in index.by_name:
         st = os.stat(os.path.join(photo_dir, name))
-        current[name] = (st.st_mtime, st.st_size)
+        current[name] = {"mtime": st.st_mtime, "size": st.st_size}
     for name in [n for n in done if n not in current]:
         del done[name]
-    todo = [n for n in sorted(current) if args.force or n not in done
-            or (done[n]["mtime"], done[n]["size"]) != current[n]]
+    todo, retagged = [], 0
+    for n in sorted(current):
+        old = done.get(n)
+        if args.force or not old or not photos.same_image(os.path.join(photo_dir, n), old, current[n]):
+            todo.append(n)
+        elif [old.get(k) for k in ("mtime", "size", "dsize")] != [current[n][k] for k in ("mtime", "size", "dsize")]:
+            old.update(current[n])  # same image, new tags (or a first "dsize"): faces kept
+            retagged += 1
     if args.random:
         random.shuffle(todo)
     if args.limit:
         todo = todo[:args.limit]
     print(f"{len(current)} photos, {len(done)} already done, {len(todo)} to do "
-          f"(OpenCV {cv2.__version__}, {args.workers} threads)")
+          f"(OpenCV {cv2.__version__}, {args.workers} threads)"
+          + (f"; {retagged} with only their tags changed, kept" if retagged else ""))
 
     sources = {}
 
     def work(name):
         path = os.path.join(photo_dir, name)
+        current[name].setdefault("dsize", photos.data_size(path))
         if index.by_name[name]["kind"] == "video":  # its preview frame
             path = photos.thumbnail(photo_dir, name, thumbs)
             if not path:
@@ -197,7 +208,7 @@ def main():
                 try:
                     faces = fut.result()
                     with lock:
-                        done[name] = {"mtime": current[name][0], "size": current[name][1],
+                        done[name] = {**current[name],
                                       "faces": [{"box": b, "score": s, "vec": v} for b, s, v in faces]}
                     n_faces += len(faces)
                 except Exception as e:  # one bad photo must not stop the others

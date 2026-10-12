@@ -213,20 +213,6 @@
           <button type="button" class="v-ask-cancel">Annuler</button>
         </div>
       </form>
-      <form class="v-ask v-admin" hidden>
-        <label
-          >Mot de passe admin
-          <input type="password" name="pw" autocomplete="current-password"
-        /></label>
-        <div>
-          <button type="submit">OK</button>
-          <button type="button" class="v-admin-cancel">Annuler</button>
-        </div>
-        <span class="v-admin-error"></span>
-      </form>
-      <div class="v-toast" hidden>
-        <span></span><button type="button">Annuler</button>
-      </div>
       <button class="v-prev" title="Précédente (←)">‹</button>
       <button class="v-next" title="Suivante (→)">›</button>
       <div class="v-top">
@@ -249,6 +235,21 @@
         <span class="v-caption"></span>
         <span class="v-count"></span>
       </div>
+    </div>
+    <!-- Admin login and short messages: over the slideshow or the map. -->
+    <form id="admin-form" class="v-ask v-admin" hidden>
+      <label
+        >Mot de passe admin
+        <input type="password" name="pw" autocomplete="current-password"
+      /></label>
+      <div>
+        <button type="submit">OK</button>
+        <button type="button" class="v-admin-cancel">Annuler</button>
+      </div>
+      <span class="v-admin-error"></span>
+    </form>
+    <div id="toast" class="v-toast" hidden>
+      <span></span><button type="button">Annuler</button>
     </div>
     <script src="vendor/pmtiles.js"></script>
     <script src="vendor/basemaps.js"></script>

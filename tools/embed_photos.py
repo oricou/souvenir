@@ -20,7 +20,9 @@ Results: cache/embeddings.json (model, vector size, and which photo is on which
 row) and cache/embeddings.f16 (the vectors, unit length, as little-endian
 half-precision floats, one row per photo). Saved regularly: the tool can be
 stopped (Ctrl+C) and started again; it only encodes new or changed photos,
-forgets deleted ones, and starts over if the model changes.
+forgets deleted ones, and starts over if the model changes. A photo whose tags
+only changed (e.g. a GPS position written by the site) keeps its vector: same
+date and same size without metadata (photos.same_image()).
 Only the standard library and Pillow are needed.
 """
 
@@ -171,17 +173,23 @@ def main():
     gone = [n for n in rows if n not in current]
     for n in gone:
         del rows[n]
-    todo = [n for n, r in sorted(current.items())
-            if args.force or n not in rows
-            or (rows[n][0]["mtime"], rows[n][0]["size"]) != (r["mtime"], r["size"])]
+    todo, retagged = [], 0
+    for n, r in sorted(current.items()):
+        old = rows[n][0] if n in rows else None
+        if args.force or not old or not photos.same_image(os.path.join(photo_dir, n), old, r):
+            todo.append(n)
+        elif [old.get(k) for k in ("mtime", "size", "dsize")] != [r[k] for k in ("mtime", "size", "dsize")]:
+            rows[n] = ({**old, **r}, rows[n][1])  # same image, new tags (or a first "dsize"): vector kept
+            retagged += 1
     if args.random:
         random.shuffle(todo)
     if args.limit:
         todo = todo[:args.limit]
     print(f"{len(current)} photos, {len(rows)} already encoded"
-          + (f", {len(gone)} deleted ones forgotten" if gone else "") + f", {len(todo)} to do")
+          + (f", {len(gone)} deleted ones forgotten" if gone else "") + f", {len(todo)} to do"
+          + (f"; {retagged} with only their tags changed, kept" if retagged else ""))
     if not todo:
-        if gone:
+        if gone or retagged:
             save(args.out, model, dim, rows)
         return
 
@@ -189,6 +197,7 @@ def main():
 
     def work(name):
         path = os.path.join(photo_dir, name)
+        current[name].setdefault("dsize", photos.data_size(path))
         if index.by_name[name]["kind"] == "video":  # encode its preview frame
             path = photos.thumbnail(photo_dir, name, thumbs)
             if not path:

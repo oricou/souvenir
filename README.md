@@ -65,7 +65,8 @@ Drop photos and videos into `data/photos/` (subfolders allowed, e.g.
 `data/photos/2026/09/`). Each one is shown on the day it was
 taken (time read from EXIF / the video file, or from Pixel `PXL_…` names), in a
 panel next to the controls, and as a square on the map in the day's colour: at its own GPS
-position if the camera saved one, otherwise where the trace was at that time.
+position if the camera saved one, otherwise where the trace was at that time
+(an admin can correct it by dragging it on the map, see below).
 Previews are made once into `cache/thumbs/` (needs Pillow; ffmpeg for videos).
 Photo times and sizes are indexed in `cache/photos.json`, so a restart does not
 re-read thousands of files; the folders are re-scanned whenever a file is added,
@@ -163,6 +164,23 @@ it back is instant. After emptying the trash, clean up:
 from `cache/thumbs/` and `cache/face_crops/` what belongs to no photo of
 `data/photos/` nor `data/trash/`. Everything removed is remade when needed.
 
+## Moving photos on the map
+
+Also in admin mode: Ctrl+drag (⌘+drag) a photo's square on the map to put it
+where it was really taken (the admin password is asked the first time). The
+position is written into the photo's EXIF GPS by ExifTool (`sudo apt install
+libimage-exiftool-perl`); the photo file is modified, but it keeps its date and
+its image data. "Annuler" or Ctrl+Z writes back its previous GPS, or removes it
+if the photo was placed from the trace. Videos cannot be moved, nor photos
+without any position (they are not on the map), nor anything on phones (no
+Ctrl key).
+
+The photo's size changes (a few hundred bytes of tags), not its size without
+metadata: `tools/find_faces.py` and `tools/embed_photos.py` store both and keep
+the faces and search vector of a photo whose date and image data are unchanged
+(they also add that size to older caches on their next run, without redoing
+anything).
+
 ## Keyboard shortcuts
 
 | Key | Action |
@@ -173,10 +191,13 @@ from `cache/thumbs/` and `cache/face_crops/` what belongs to no photo of
 | d | full-screen slideshow (diaporama) of the panel's photos |
 | f | in the slideshow: show the faces, to name people |
 | Suppr | in the slideshow: move the photo to `data/trash/` (admin password) |
-| Ctrl+Z | undo the last deletion (again: the one before…) |
+| Ctrl+Z | undo the last deletion or move on the map (again: the one before…) |
+| Ctrl+drag | on the map: move a photo (admin password) |
 
 In the slideshow: ← → previous / next photo, Space starts or stops automatic
-playback (5 s per photo), Esc closes.
+playback (5 s per photo), Esc closes. Mouse wheel or pinch zooms in, then
+drag or Shift+arrows move in the photo; a double-click (double-tap) goes back
+to the map on that photo.
 
 ## Update the map
 
