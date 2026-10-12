@@ -125,7 +125,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   display: flex; align-items: center; gap: 12px; font-size: 14px;
 }
 .v-toast[hidden] { display: none; }
-.v-toast button {
+.v-toast button, #viewer .v-toast button { /* #viewer: wins over "#viewer button" */
   position: static; border: none; color: #fff; cursor: pointer; width: auto; height: auto; border-radius: 6px; font-size: 14px;
   padding: 4px 12px; opacity: 1; background: #2563eb;
 }
@@ -152,6 +152,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .photo .who { padding: 0 10px 6px; font-size: 12px; color: var(--fg); }
 #viewer.idle button, #viewer.idle .v-bar { opacity: 0; } /* hidden after a few s without mouse move */
 #viewer.idle { cursor: none; }
+#viewer.idle .v-ask button, #viewer.idle .v-toast button { opacity: 1; } /* a form or message stays usable */
 #viewer.zoomed .v-stage { cursor: grab; touch-action: none; } /* drag to move the zoomed photo */
 #viewer.zoomed .v-stage:active { cursor: grabbing; }
 #viewer .v-stage img { will-change: transform; }

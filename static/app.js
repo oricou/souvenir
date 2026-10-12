@@ -952,10 +952,18 @@ async function postJSON(url, body) {
   return { ok: r.ok, data: await r.json().catch(() => ({})) };
 }
 
+/** Show the admin form or the toast where it can be seen: in the slideshow while it is
+    open (in full screen, nothing outside it shows), else over the map. */
+function overlay(el) {
+  const parent = viewerOpen() ? $('viewer') : document.body;
+  if (el.parentElement !== parent) parent.append(el);
+  return el;
+}
+
 /** Ask the admin password (over the slideshow or the map), then run `next` once logged in. */
 let afterLogin = null;
 function askAdmin(next) {
-  const form = $('admin-form');
+  const form = overlay($('admin-form'));
   afterLogin = next;
   stopAuto();
   hideAsk();
@@ -1060,7 +1068,7 @@ async function undoDelete(entry = deletions[deletions.length - 1]) {
   if (viewerOpen()) showToast(`${p.name.split('/').pop()} remise en place`);
 }
 function showToast(text, undo) {
-  const toast = $('toast');
+  const toast = overlay($('toast'));
   toast.querySelector('span').textContent = text;
   toast.querySelector('button').hidden = !undo; // a plain message has no "Annuler"
   toast.querySelector('button').onclick = (e) => { e.stopPropagation(); toast.hidden = true; clearTimeout(toastTimer); undo?.(); };
