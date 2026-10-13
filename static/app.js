@@ -551,11 +551,33 @@ function daysLabel() {
   return `${days.length} jours, du ${fmtShortDay(days[0])} au ${fmtShortDay(days[days.length - 1])}`;
 }
 const shownPhotoList = () => !showPhotos() ? []
-  : state.search ? state.search.photos // all days, best match first ("ici": only in view)
+  : state.search ? searchPhotos() // all days, best match first ("ici": only in view)
   : state.person ? personPhotos().filter((p) => !showHere() || inView(p)) // by date
   : showHere() ? state.here.photos : selectedPhotos();
 const fmtShortDay = (k) => keyDate(k).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
 const plural = (n) => n > 1 ? 's' : '';
+
+/* Search results: the "Pertinence" slider above them keeps the photos scoring at least
+   that share of the best match (60 %: all those the server returns; 100 %: the best). */
+const THRESHOLD_KEY = 'souvenir.searchThreshold';
+/** The best match's score: from the server (before "ici" filtering), else the best returned. */
+const searchBest = (s) => s.best ?? Math.max(0, ...s.photos.map((p) => p.score ?? 0));
+function searchPhotos() {
+  const { photos } = state.search, best = searchBest(state.search);
+  if (!best) return photos; // only names: their photos by date, no scores
+  const min = best * (+$('threshold').value / 100) - 1e-9;
+  return photos.filter((p) => p.score == null || p.score >= min);
+}
+$('threshold').addEventListener('input', () => {
+  $('threshold-out').textContent = `${$('threshold').value} %`;
+  try { localStorage.setItem(THRESHOLD_KEY, $('threshold').value); } catch { /* ignore */ }
+  if (state.search) updatePhotos();
+});
+try {
+  const saved = localStorage.getItem(THRESHOLD_KEY);
+  if (saved) $('threshold').value = saved;
+} catch { /* ignore */ }
+$('threshold-out').textContent = `${$('threshold').value} %`;
 
 function photoFeatures() {
   return shownPhotoList().flatMap((p) => {
@@ -579,7 +601,7 @@ function renderPhotos() {
   const all = !showPhotos() ? 0 : found ? found.total : person ? personPhotos().length : here ? state.here.total : selectedPhotos().length;
   $('photos').hidden = $('photo-resizer').hidden = !all && !found && !person;
   $('photo-count').textContent = found
-    ? `recherche${here ? ' ici' : ''} · ${found.total > list.length ? `${list.length} premières / ${found.total}` : list.length}`
+    ? `recherche${here ? ' ici' : ''} · ${found.total > list.length ? `${list.length} / ${found.total}` : list.length}`
     : person ? ''
     : here ? `ici · ${list.length} / ${all}` : list.length ? String(list.length) : '';
   if (person && !found) { // the person's name: click to correct it
@@ -591,6 +613,7 @@ function renderPhotos() {
     who.onclick = () => editPersonName(who);
     $('photo-count').append(who, `${here ? ' ici' : ''} · ${list.length}`);
   }
+  $('search-threshold').hidden = !(found && searchBest(found));
   $('photo-note').hidden = list.length > 0;
   $('photo-note').textContent = found
     ? (found.error ? `Recherche indisponible : ${found.error}` : `Aucune photo trouvée ${daysLabel()}${here ? ' dans cette zone de la carte' : ''}.`)

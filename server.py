@@ -535,7 +535,8 @@ class Handler(SimpleHTTPRequestHandler):
             limit = max(1, min(1000, int(query.get("limit", ["200"])[0])))
         except ValueError:
             limit = 200
-        result = {"total": len(found), "photos": found[:limit], "names": names, "rest": rest}
+        result = {"total": len(found), "photos": found[:limit], "names": names, "rest": rest,
+                  "best": ranked[0][1] if ranked else None}  # the page's slider: a share of it
         if warning:
             result["warning"] = warning
         return self.send_json(result)

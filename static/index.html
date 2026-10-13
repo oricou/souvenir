@@ -170,6 +170,16 @@
         <button type="submit">OK</button>
         <span class="hint" id="alias-note"></span>
       </form>
+      <label
+        class="row"
+        id="search-threshold"
+        title="Seulement les photos assez proches de la recherche : de 60 % du score de la meilleure (toutes) à 100 % (la meilleure seule)"
+        hidden
+      >
+        <span>Pertinence</span>
+        <input type="range" id="threshold" min="60" max="100" step="1" value="70" />
+        <output id="threshold-out"></output>
+      </label>
       <p class="hint" id="photo-note" hidden></p>
       <div id="photo-list"></div>
     </aside>

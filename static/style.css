@@ -222,6 +222,7 @@ button:hover { background: var(--hover); }
 .cal-grid .d.has:hover { outline: 1px solid var(--accent); }
 .cal-grid .d.sel { background: var(--c, var(--accent)); color: #fff; }
 
+.row[hidden] { display: none; }
 .row { display: grid; grid-template-columns: 76px 1fr 56px; align-items: center; gap: 8px; margin-bottom: 6px; }
 .row output { text-align: right; font-variant-numeric: tabular-nums; }
 .row input { width: 100%; accent-color: var(--accent); }

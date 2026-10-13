@@ -93,6 +93,9 @@ GPS position. Without the file, times are shown in this computer's zone.
 The box under the title finds photos by meaning, in French or English
 ("un bateau", "plage au coucher du soleil", "quelqu'un qui fait des travaux"),
 across all days, best match first; with "ici", only those in the visible area.
+Too many results? The "Pertinence" slider above them keeps only the photos
+scoring at least that share of the best match: 60 % shows all those found,
+100 % the best one alone (70 % by default; the last setting is remembered).
 
 Photos and queries are turned into vectors by the same multimodal embedding
 model (Qwen3-VL-Embedding-2B) and compared. Two steps:
