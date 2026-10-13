@@ -349,6 +349,45 @@ class People:
             self._save()
             return name, clean
 
+    def rename(self, name, new, merge=False):
+        """Correct a person's name ("Laurance" -> "Laurence"); returns the name kept.
+        If `new` is already someone else's name or alias, they are one person: merged
+        (faces, refusals and aliases) when merge is True, else LookupError(their name)."""
+        self._refresh()
+        with self.lock:
+            name = self.canonical(name)
+            person = self.store["people"].get(name)
+            if person is None:
+                raise KeyError(f"unknown person {name}")
+            new = " ".join(str(new).split())
+            if not new or len(new) > 100 or not re.search(r"\w", new):
+                raise ValueError("invalid name")
+            other = self.canonical(new)
+            if other in self.store["people"] and other != name:
+                if not merge:
+                    raise LookupError(other)
+                target = self.store["people"][other]
+                key = lambda e: (e["photo"], e["face"])  # noqa: E731
+                named = {key(e) for e in target["examples"]}
+                target["examples"] += [e for e in person["examples"] if key(e) not in named]
+                named |= {key(e) for e in person["examples"]}
+                refused = {}
+                for e in target.get("refused", []) + person.get("refused", []):
+                    if key(e) not in named:  # named as one of them: not a refusal any more
+                        refused.setdefault(key(e), e)
+                target["refused"] = list(refused.values())
+                target["aliases"] = [a for a in dict.fromkeys(target.get("aliases", []) + person.get("aliases", []))
+                                     if _plain(a) != _plain(other)]
+                del self.store["people"][name]
+                kept = other
+            else:  # only the spelling changes (or one of their aliases becomes the name)
+                person["aliases"] = [a for a in person.get("aliases", []) if _plain(a) != _plain(new)]
+                del self.store["people"][name]
+                self.store["people"][new] = person
+                kept = new
+            self._save()
+            return kept
+
     @staticmethod
     def _drop(entries, photo, index):
         return [e for e in entries if not (e["photo"] == photo and e["face"] == index)]

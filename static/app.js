@@ -580,8 +580,17 @@ function renderPhotos() {
   $('photos').hidden = $('photo-resizer').hidden = !all && !found && !person;
   $('photo-count').textContent = found
     ? `recherche${here ? ' ici' : ''} · ${found.total > list.length ? `${list.length} premières / ${found.total}` : list.length}`
-    : person ? `${person.name}${here ? ' ici' : ''} · ${list.length}`
+    : person ? ''
     : here ? `ici · ${list.length} / ${all}` : list.length ? String(list.length) : '';
+  if (person && !found) { // the person's name: click to correct it
+    const who = document.createElement('button');
+    who.type = 'button';
+    who.className = 'person-name';
+    who.textContent = person.name;
+    who.title = 'Cliquer pour corriger le nom';
+    who.onclick = () => editPersonName(who);
+    $('photo-count').append(who, `${here ? ' ici' : ''} · ${list.length}`);
+  }
   $('photo-note').hidden = list.length > 0;
   $('photo-note').textContent = found
     ? (found.error ? `Recherche indisponible : ${found.error}` : `Aucune photo trouvée ${daysLabel()}${here ? ' dans cette zone de la carte' : ''}.`)
@@ -1257,6 +1266,55 @@ $('alias-form').addEventListener('submit', async (e) => {
   $('alias-note').textContent = data.aliases.length ? 'Enregistré : la recherche les reconnaît.' : 'Aucun autre nom.';
   await loadPeople();
 });
+
+/* In a person's view, click their name above the photos to correct it ("Laurance" ->
+   "Laurence"); a name already given to someone else merges the two, after asking. */
+function editPersonName(btn) {
+  const old = state.person?.name;
+  if (!old) return;
+  const input = document.createElement('input');
+  input.className = 'person-name-edit';
+  input.value = old;
+  input.size = Math.max(8, old.length + 2);
+  input.setAttribute('aria-label', 'Nom de la personne');
+  btn.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (save) => {
+    if (done) return;
+    done = true;
+    const to = input.value.trim();
+    if (save && to && to !== old) return renamePerson(old, to);
+    state.photoKey = null; // back to the name as it was
+    renderPhotos();
+  };
+  input.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  };
+  input.onblur = () => finish(false);
+}
+async function renamePerson(old, to, merge = false) {
+  const { ok, data } = await postJSON('api/people/rename', { name: old, to, merge });
+  if (!ok) {
+    if (data.merge && !merge &&
+        confirm(`« ${data.merge} » existe déjà. Réunir ${old} et ${data.merge} en une seule personne, ${data.merge} ?`)) {
+      return renamePerson(old, to, true);
+    }
+    if (!data.merge) alert(`Impossible : ${data.error || ''}`);
+    state.photoKey = null;
+    return renderPhotos();
+  }
+  aliasFor = null; // the alias form shows the person under their new name
+  facesCache.clear(); // faces show names
+  state.photos.clear(); // each photo lists its people's names: reloaded
+  await load();
+  render();
+  await showPerson(data.name, { keepView: true });
+  await loadPeople();
+}
 
 /* Click the "Personnes" title to fold / unfold the list (remembered in this browser). */
 const PEOPLE_FOLD_KEY = 'souvenir.peopleFolded';

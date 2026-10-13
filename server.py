@@ -318,12 +318,15 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         """The user's answers about people: {photo, face, name} to /api/people/name
         ("this face is name") or /api/people/refuse ("this face is not name"), and
-        {name, aliases} to /api/people/aliases (their other names)."""
+        {name, aliases} to /api/people/aliases (their other names), {name, to, merge}
+        to /api/people/rename (a corrected name; merge: with the person already called so)."""
         if not self.authorized():
             return
         path = urlparse(self.path).path
         if path == "/api/people/aliases":
             return self.post_aliases()
+        if path == "/api/people/rename":
+            return self.post_rename()
         if path.startswith("/api/admin/") or path in ("/api/photos/delete", "/api/photos/restore",
                                                       "/api/photos/place"):
             return self.post_admin(path)
@@ -344,6 +347,23 @@ class Handler(SimpleHTTPRequestHandler):
         except (ValueError, KeyError, TypeError) as e:
             return self.send_json_status(HTTPStatus.BAD_REQUEST, {"error": str(e)})
         return self.send_json({"ok": True, "name": name, "faces": self.people.faces_of(photo)})
+
+    def post_rename(self):
+        """{name, to, merge}: correct a person's name; 409 {merge: other} if `to` is
+        already another person and merge is not true."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 10_000:
+                raise ValueError("body size")
+            body = json.loads(self.rfile.read(length))
+            name = self.people.rename(str(body["name"]), str(body["to"]), merge=body.get("merge") is True)
+        except LookupError as e:
+            if not isinstance(e, KeyError):  # `to` is someone else: merge them?
+                return self.send_json_status(HTTPStatus.CONFLICT, {"error": "already a person", "merge": e.args[0]})
+            return self.send_json_status(HTTPStatus.BAD_REQUEST, {"error": str(e).strip("'\"")})
+        except (ValueError, TypeError) as e:
+            return self.send_json_status(HTTPStatus.BAD_REQUEST, {"error": str(e)})
+        return self.send_json({"ok": True, "name": name})
 
     def post_aliases(self):
         """{name, aliases: [...]}: the other names of a person."""
@@ -662,7 +682,7 @@ def main():
     # (a child process) is stopped too.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     Handler.search.start()
-    Handler.people = people.People()
+    Handler.people = people.People(store=os.path.join(os.path.abspath(args.data), "people.json"))
     if Handler.people.available():
         names = Handler.people.people()
         print(f"People: {len(Handler.people.faces)} faces found, {len(names)} names given"
