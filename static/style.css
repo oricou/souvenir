@@ -163,6 +163,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 #viewer .v-stage img { will-change: transform; }
 #photos h2 { margin: 0; }
 #photo-list { display: flex; flex-direction: column; gap: 14px; }
+#photo-list .more {
+  font: inherit; padding: 8px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line); background: none; color: inherit;
+}
+#photo-list .more:hover { border-color: var(--accent); color: var(--accent); }
 .photo-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }
 .photo-pair figcaption { flex-wrap: wrap; column-gap: 6px; row-gap: 0; }
 .photo { margin: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); scroll-margin: 16px; }

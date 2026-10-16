@@ -275,6 +275,8 @@ class Handler(SimpleHTTPRequestHandler):
         if url.path == "/api/photos":
             query = parse_qs(url.query)
             days = [d for d in query.get("days", [""])[0].split(",") if d]
+            if "all" in query:  # "Dates : toutes": every day's photos
+                days = sorted(self.photo_index.days())
             found = self.with_people(self.photo_index.photos_of(days))
             if "bbox" not in query:
                 return self.send_json(found)

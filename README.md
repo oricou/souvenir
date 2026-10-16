@@ -67,6 +67,12 @@ taken (time read from EXIF / the video file, or from Pixel `PXL_…` names), in 
 panel next to the controls, and as a square on the map in the day's colour: at its own GPS
 position if the camera saved one, otherwise where the trace was at that time
 (an admin can correct it by dragging it on the map, see below).
+The panel shows 20 photos at a time ("Plus de photos" for 20 more; a photo
+clicked on the map further down is shown at once); the map and the slideshow
+have them all. Its title says how many are shown out of the list: "ici · 20 /
+76" means 56 more with "Plus de photos", and a slideshow of 76. Folding the "Dates" title means all dates: every photo is listed
+(not the traces, far too many); with "ici", all the photos ever taken in the
+visible area.
 Previews are made once into `cache/thumbs/` (needs Pillow; ffmpeg for videos).
 Photo times and sizes are indexed in `cache/photos.json`, so a restart does not
 re-read thousands of files; the folders are re-scanned whenever a file is added,

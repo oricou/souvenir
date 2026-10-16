@@ -359,7 +359,7 @@ const photoUrl = (name, thumb) => `${thumb ? 'thumbs' : 'photos'}/${name.split('
 
 function photoInfo(p) {
   return `<img class="pop-img" src="${photoUrl(p.name, true)}" alt=""><br>` +
-    `<b>${state.selected.length > 1 ? fmtShortDay(p.day) + ' ' : ''}${fmtTime(p.t, p.off)}</b>${tzLabel(p.t, p.off)}` +
+    `<b>${state.selected.length !== 1 ? fmtShortDay(p.day) + ' ' : ''}${fmtTime(p.t, p.off)}</b>${tzLabel(p.t, p.off)}` +
     (p.kind === 'video' ? ' · vidéo' : '') +
     (p.exact ? '' : '<br><span class="pop-note">position estimée d’après la trace</span>') +
     (state.admin.logged && p.kind !== 'video' ? '<br><span class="pop-note">Ctrl+glisser : déplacer</span>' : '');
@@ -536,7 +536,11 @@ function render(fit = false) {
 
 /* ---------- Photos ---------- */
 
-const selectedPhotos = () => state.selected.flatMap((d) => state.photos.get(d) || []).sort((a, b) => a.t - b.t);
+/** The selected days' photos by time; "Dates : toutes" (folded): every photo (state.allPhotos). */
+let allSorted = null; // state.allPhotos by time, made once
+const selectedPhotos = () => datesFolded()
+  ? (state.allPhotos ? (allSorted ??= [...state.allPhotos].sort((a, b) => a.t - b.t)) : [])
+  : state.selected.flatMap((d) => state.photos.get(d) || []).sort((a, b) => a.t - b.t);
 const inView = (p) => p.lat != null && map.getBounds().contains([p.lon, p.lat]);
 /** The shown person's photos taken on the days selected in the calendar (all if none is). */
 const personPhotos = () => {
@@ -600,10 +604,9 @@ function renderPhotos() {
   state.photoKey = key;
   const all = !showPhotos() ? 0 : found ? found.total : person ? personPhotos().length : here ? state.here.total : selectedPhotos().length;
   $('photos').hidden = $('photo-resizer').hidden = !all && !found && !person;
-  $('photo-count').textContent = found
-    ? `recherche${here ? ' ici' : ''} · ${found.total > list.length ? `${list.length} / ${found.total}` : list.length}`
-    : person ? ''
-    : here ? `ici · ${list.length} / ${all}` : list.length ? String(list.length) : '';
+  // "ici · 20 / 76": photos shown in the panel / in the list (which the slideshow goes through).
+  const count = $('photo-count');
+  count.textContent = found ? `recherche${here ? ' ici' : ''} · ` : person ? '' : here ? 'ici · ' : '';
   if (person && !found) { // the person's name: click to correct it
     const who = document.createElement('button');
     who.type = 'button';
@@ -611,8 +614,12 @@ function renderPhotos() {
     who.textContent = person.name;
     who.title = 'Cliquer pour corriger le nom';
     who.onclick = () => editPersonName(who);
-    $('photo-count').append(who, `${here ? ' ici' : ''} · ${list.length}`);
+    count.append(who, `${here ? ' ici' : ''} · `);
   }
+  const shown = document.createElement('span');
+  shown.className = 'shown-count';
+  shown.title = 'Photos affichées / en tout (« Plus de photos » pour les suivantes ; le diaporama les montre toutes)';
+  count.append(shown);
   $('search-threshold').hidden = !(found && searchBest(found));
   $('photo-note').hidden = list.length > 0;
   $('photo-note').textContent = found
@@ -621,17 +628,35 @@ function renderPhotos() {
     : !showPhotos() ? 'Photos masquées (case « Photo » dans les filtres).'
     : here ? 'Aucune photo de ces jours dans cette zone de la carte.'
     : state.selected.length ? 'Aucune photo pour les jours choisis.'
-    : 'Toutes les dates : cherchez des photos ou choisissez une personne (ou dépliez « Dates »).';
+    : datesFolded() && !state.allPhotos ? 'Chargement des photos…'
+    : 'Aucune photo.';
   $('tab-count').textContent = list.length ? String(list.length) : '';
   $('tab-here').hidden = !here; // phones: 🎯 on the 🔍 tab while "ici" filters the photos
   showAliasForm();
   const box = $('photo-list');
   box.textContent = '';
-  const manyDays = found || person || state.selected.length > 1;
+  const manyDays = found || person || state.selected.length !== 1;
+  // A new list (search, person, days, "ici") or a longer one (another place on the map…)
+  // starts again at its first PHOTO_PAGE photos; a shorter one (a photo deleted) does not.
+  const context = [found?.q, person?.name, here, datesFolded(), state.selected.join()].join('|');
+  if (context !== panel.context || list.length > panel.list.length) Object.assign(panel, { context, count: PHOTO_PAGE });
+  Object.assign(panel, { list, manyDays });
+  appendPhotos(0, Math.min(list.length, panel.count));
+}
+
+/* The photo panel shows its list PHOTO_PAGE photos at a time ("Plus de photos"), so that
+   years of photos stay light; the map and the slideshow have all of them. */
+const PHOTO_PAGE = 20;
+const panel = { context: null, count: PHOTO_PAGE, list: [], manyDays: false };
+/** Add the panel's photos from..to-1 (then the "Plus de photos" button if some are left). */
+function appendPhotos(from, to) {
+  const box = $('photo-list'), { list, manyDays } = panel;
+  box.querySelector('.more')?.remove();
   // Two portrait photos in a row share a line, to save space.
   const portrait = (p) => p && p.h > p.w;
   let row = null;
-  list.forEach((p, i) => {
+  for (let i = from; i < to; i++) {
+    const p = list[i];
     const fig = document.createElement('figure');
     fig.className = 'photo';
     fig.dataset.name = p.name;
@@ -677,7 +702,7 @@ function renderPhotos() {
     if (row) {
       row.append(fig);
       row = null;
-    } else if (portrait(p) && portrait(list[i + 1])) {
+    } else if (portrait(p) && i + 1 < to && portrait(list[i + 1])) {
       row = document.createElement('div');
       row.className = 'photo-pair';
       row.append(fig);
@@ -685,7 +710,24 @@ function renderPhotos() {
     } else {
       box.append(fig);
     }
-  });
+  }
+  const shown = $('photo-count').querySelector('.shown-count');
+  if (shown) shown.textContent = list.length ? `${to} / ${list.length}` : '0';
+  if (to < list.length) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'more';
+    const next = Math.min(PHOTO_PAGE, list.length - to);
+    more.textContent = `Plus de photos (${next} de plus, ${list.length - to} restantes)`;
+    more.onclick = () => showMorePhotos();
+    box.append(more);
+  }
+}
+/** Show PHOTO_PAGE more photos in the panel, or up to the photo at index `upTo`. */
+function showMorePhotos(upTo = 0) {
+  const from = Math.min(panel.count, panel.list.length);
+  panel.count = Math.max(panel.count + PHOTO_PAGE, Math.ceil((upTo + 1) / PHOTO_PAGE) * PHOTO_PAGE);
+  appendPhotos(from, Math.min(panel.list.length, panel.count));
 }
 
 /* Drag the border between the photo panel and the map to change its width. */
@@ -721,8 +763,9 @@ $('photo-resizer').addEventListener('dblclick', () => {
   try { localStorage.removeItem(PHOTO_WIDTH_KEY); } catch { /* ignore */ }
 });
 
-/* "ici": the server filters the selected days' photos on the view (a year of photos
-   is never sent to show the few taken here). Asked again when the map stops moving. */
+/* "ici": the server filters the selected days' photos (all of them with "Dates : toutes")
+   on the view (years of photos are never sent to show the few taken here). Asked again
+   when the map stops moving. */
 let hereRequest = null;
 async function loadHere() {
   if (state.search) return runSearch(); // a search shown: it is filtered on the view instead
@@ -731,9 +774,9 @@ async function loadHere() {
   hereRequest = new AbortController();
   const b = map.getBounds();
   const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((v) => v.toFixed(5)).join(',');
-  const days = [...state.selected].sort().join(',');
+  const days = datesFolded() ? 'all=1' : 'days=' + [...state.selected].sort().join(','); // folded: every year
   try {
-    const r = await fetch(`api/photos?days=${days}&bbox=${bbox}`, { signal: hereRequest.signal });
+    const r = await fetch(`api/photos?${days}&bbox=${bbox}`, { signal: hereRequest.signal });
     state.here = r.ok ? await r.json() : { total: 0, photos: [] };
   } catch (e) {
     if (e.name === 'AbortError') return; // the map or selection changed: a newer request is on its way
@@ -803,6 +846,10 @@ function updatePhotos() {
 function highlightPhoto(name, { scroll = false } = {}) {
   state.highlighted = name;
   for (const f of document.querySelectorAll('.photo.hl')) f.classList.remove('hl');
+  if (scroll) { // further down than the panel shows: show up to it
+    const i = panel.list.findIndex((p) => p.name === name);
+    if (i >= panel.count) showMorePhotos(i);
+  }
   const fig = [...document.querySelectorAll('.photo')].find((f) => f.dataset.name === name);
   if (fig) {
     fig.classList.add('hl');
@@ -940,7 +987,7 @@ function showInViewer() {
 
 /** Every copy of this photo the page holds (days, search, person, "ici", slideshow). */
 function photoCopies(name) {
-  const lists = [...state.photos.values(), state.search?.photos, state.person?.photos, state.here.photos, viewer.list];
+  const lists = [...state.photos.values(), state.allPhotos, state.search?.photos, state.person?.photos, state.here.photos, viewer.list];
   return [...new Set(lists.flatMap((l) => (l || []).filter((p) => p.name === name)))];
 }
 /** Put the page's copies of a photo at pos ({lat, lon, exact, off}) and redraw it. */
@@ -1043,6 +1090,8 @@ function forgetPhoto(name) {
   for (const list of state.photos.values()) drop(list);
   drop(state.search?.photos);
   drop(state.person?.photos);
+  drop(state.allPhotos);
+  allSorted = null;
   drop(state.here.photos);
   if (state.search) state.search.total = state.search.photos.length;
   updatePhotos();
@@ -1087,6 +1136,7 @@ async function undoDelete(entry = deletions[deletions.length - 1]) {
   deletions.splice(deletions.indexOf(entry), 1);
   $('toast').hidden = true;
   state.photos.delete(p.day); // reloaded, with it
+  state.allPhotos = null;
   await load();
   if (state.search) await runSearch();
   if (state.person) await showPerson(state.person.name, { keepView: true });
@@ -1333,6 +1383,7 @@ async function renamePerson(old, to, merge = false) {
   aliasFor = null; // the alias form shows the person under their new name
   facesCache.clear(); // faces show names
   state.photos.clear(); // each photo lists its people's names: reloaded
+  state.allPhotos = null;
   await load();
   render();
   await showPerson(data.name, { keepView: true });
@@ -1637,10 +1688,17 @@ async function select(days, { add = false } = {}) {
 async function load() {
   // With "ici", photos come filtered from the server (loadHere), not day by day.
   const needPhotos = showHere() ? [] : state.selected.filter((d) => !state.photos.has(d));
+  // "Dates : toutes": every photo, once (no traces: far too many); the panel shows 20 at a time.
+  const needAll = datesFolded() && !showHere() && !state.allPhotos;
   const needTracks = showGps() ? state.selected.filter((d) => !state.tracks.has(d)) : [];
   const batches = [];
   for (let i = 0; i < needPhotos.length; i += 100) batches.push(needPhotos.slice(i, i + 100));
   await Promise.all([
+    needAll && (async () => {
+      const r = await fetch('api/photos?all=1');
+      state.allPhotos = r.ok ? await r.json() : [];
+      allSorted = null;
+    })(),
     ...batches.map(async (days) => {
       const r = await fetch('api/photos?days=' + days.join(','));
       const list = r.ok ? await r.json() : [];
@@ -1721,8 +1779,9 @@ function selectWeek() {
 }
 
 /* The "Dates" title: unfolded, the calendar chooses the days that filter everything;
-   folded, no day is selected, i.e. no date filter: the search and Personnes cover all
-   dates (the traces and photos of every day are not loaded: far too many). Unfolding
+   folded, no day is selected, i.e. no date filter: the search, Personnes and the photos
+   cover all dates (every photo is listed, the panel shows 20 at a time; the traces are
+   not loaded: far too many). Unfolding
    gives back the days selected before. Remembered in this browser. */
 const DATES_FOLD_KEY = 'souvenir.datesFolded';
 const datesFolded = () => $('dates-section').classList.contains('folded');
