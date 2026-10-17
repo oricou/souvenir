@@ -1,22 +1,23 @@
 # Souvenir
 
-Private web viewer for the daily GPSLogger traces (`YYYYMMDD.zip`).
+Private web viewer for photos and GPSLogger traces.
 
 Everything is served locally by `server.py` (Python standard library only):
-traces, OpenStreetMap vector tiles for France, fonts, icons and JS libraries.
-A strict Content-Security-Policy (`connect-src 'self'`…) prevents the browser
-from contacting any other site, so neither the traces nor the viewed area leak.
+traces, photos, OpenStreetMap vector tiles (the world, and France in detail),
+fonts, icons and JS libraries. A strict Content-Security-Policy (`connect-src
+'self'`…) prevents the browser from contacting any other site, so neither the
+traces, the viewed area nor any photo can leak.
+
+GPS traces or photos can be used alone.
 
 ## Requirements
 
-- Python 3 (the server needs nothing else).
-- Optional, for photos: Pillow (`sudo apt install python3-pil`) for photo
-  dates/positions and previews, ffmpeg (`sudo apt install ffmpeg`) for video
-  previews. Without them, times come from `PXL_…` file names and full images
-  are served.
-- For `tools/edit_photo.py`: ExifTool (`sudo apt install libimage-exiftool-perl`).
-- For `tools/build_timezones.py` (run once) and for the search: NumPy
-  (`sudo apt install python3-numpy`).
+- Python 3
+- Pillow for photo
+- ffmpeg for video
+- ExifTool for `tools/edit_photo.py` and the server (turning and moving photos)
+- NumPy for `tools/build_timezones.py` (run once), the faces and the search
+- OpenCV for `tools/find_faces.py` (installed in `.venv/` by `make faces`)
 
 ## Install
 
@@ -30,47 +31,79 @@ build of the last week (`make france BUILD=YYYYMMDD` to choose).
 
 ## Run
 
-    python3 server.py            # then open http://127.0.0.1:8080/
+- Test: `python3 server.py` (or `make run`), then open http://127.0.0.1:8080/
+- Production: `make service`
 
-Options: `--data DIR` (default `./data`), `--gps DIR` (default `DATA/gps`),
-`--photos DIR` (default `DATA/photos`), `--port` (default 8080), `--host`
-(default `0.0.0.0`: other devices on your network can open the site too, at
-this computer's address), `--password PW` (asked from other devices, never
-from this computer; any user name works; the `SOUVENIR_PASSWORD` environment
-variable does the same without showing the password in `ps`). Without a
-password, use `--host 127.0.0.1` to keep the site to this computer. The site
-is plain HTTP: on the network the password is not encrypted.
+### Server.py
+
+Options:
+
+- `--data DIR` (default `./data`),
+- `--gps DIR` (default `DATA/gps`),
+- `--photos DIR` (default `DATA/photos`),
+- `--port` (default 8080),
+- `--host` (default `0.0.0.0`: other devices on your network can open the site too, at this computer's address),
+- `--password PW` (asked from other devices, never from this computer; any user
+  name works; the `SOUVENIR_PASSWORD` environment variable does the same
+  without showing the password in `ps`). Without a password, use `--host
+  127.0.0.1` to keep the site to this computer. The site is plain HTTP: on
+  the network the password is not encrypted.
+- `--admin-password PW` (or `SOUVENIR_ADMIN_PASSWD`): unlocks deleting, turning
+  and moving photos (see [Work on photos](#work-on-photos)); without it, the
+  site cannot change any photo.
+- `--embed-api URL` and `--embed-key KEY` (or `SOUVENIR_API_KEY`): encode the
+  search queries with that API (e.g. vLLM on a GPU) instead of llama.cpp on
+  this CPU (see [Search](#search)).
+
+### Service
 
 To keep it running after closing the terminal, and start it at each login,
 install it as a systemd user service:
 
+`make service` installs it if it never was, starts it if it is stopped and
+restarts it if it runs (e.g. after changing `server.py`). By hand:
+
     tools/install_service.sh              # --linger: also when not logged in
     tools/install_service.sh --password   # ask a password for other devices
-    tools/install_service.sh --admin-password  # allow deleting photos (see below)
+    tools/install_service.sh --admin-password  # allow deleting, turning, moving photos
     systemctl --user restart souvenir     # after changing server.py
     journalctl --user -u souvenir -f      # its messages
     tools/install_service.sh --uninstall
 
-## Add days
+## Add GPS traces
 
 Drop the `YYYYMMDD.zip` files into `data/gps/` (plain `.csv` or `.gpx` also work,
 as do the old GPSLogger names with a space, `YYYYMMDD .gpx` / `.zip` / `.txt`).
 When a day has several files: zip, then csv, then gpx, then txt. Empty files
 are ignored.
-No restart needed; reload the page.
+No server restart needed; reload the page.
 
 ## Photos
 
 Drop photos and videos into `data/photos/` (subfolders allowed, e.g.
-`data/photos/2026/09/`). Each one is shown on the day it was
-taken (time read from EXIF / the video file, or from Pixel `PXL_…` names), in a
-panel next to the controls, and as a square on the map in the day's colour: at its own GPS
-position if the camera saved one, otherwise where the trace was at that time
-(an admin can correct it by dragging it on the map, see below).
+`data/photos/2026/09/`). Each one is shown on the day it was taken, in a panel
+next to the controls, and as a square on the map in the day's colour: at its own
+GPS position if the camera saved one, otherwise where the trace was at that time
+(an admin can correct its position by dragging it on the map, see below).
+
+The time comes from the photo's EXIF date (DateTimeOriginal) or the video's
+header; for a file with neither, from a Pixel `PXL_…` name. Files without any
+date are skipped.
+
+### Photo panel
+
+Photos shown are selected from:
+
+- the search results
+- the selected person
+- the dates chosen
+- the location on the map if "ici" is selected.
+
 The panel shows 20 photos at a time ("Plus de photos" for 20 more; a photo
 clicked on the map further down is shown at once); the map and the slideshow
 have them all. Its title says how many are shown out of the list: "ici · 20 /
-76" means 56 more with "Plus de photos", and a slideshow of 76. Folding the "Dates" title means all dates: every photo is listed
+76" means 56 more with "Plus de photos", and a slideshow of 76.
+Folding the "Dates" title means all dates: every photo is listed
 (not the traces, far too many); with "ici", all the photos ever taken in the
 visible area.
 Previews are made once into `cache/thumbs/` (needs Pillow; ffmpeg for videos).
@@ -106,21 +139,21 @@ scoring at least that share of the best match: 60 % shows all those found,
 Photos and queries are turned into vectors by the same multimodal embedding
 model (Qwen3-VL-Embedding-2B) and compared. Two steps:
 
-1. Encode the photos, once (then again after adding photos: only new ones are
-   done), on a computer with a GPU (~0.1 s per photo with an RTX 4060 Ti):
+1.  Encode the photos, once (then again after adding photos: only new ones are
+    done), on a computer with a GPU (~0.1 s per photo with an RTX 4060 Ti):
 
-       vllm serve Qwen/Qwen3-VL-Embedding-2B --runner pooling --max-model-len 1024
-       tools/embed_photos.py [--api http://HOST:8000/v1] [--api-key KEY]
+        vllm serve Qwen/Qwen3-VL-Embedding-2B --runner pooling --max-model-len 1024
+        tools/embed_photos.py [--api http://HOST:8000/v1] [--api-key KEY]
 
-   This writes `cache/embeddings.json` and `cache/embeddings.f16`. vLLM can
-   then be stopped: the GPU is not needed to search.
+    This writes `cache/embeddings.json` and `cache/embeddings.f16`. vLLM can
+    then be stopped: the GPU is not needed to search.
 
-2. Search: `make search` installs llama.cpp (CPU build) and the same model in
-   8 bits (1.8 GB, checksums verified). When photo vectors exist, the server
-   starts it as a child process (127.0.0.1 only, stopped with the server) and
-   encodes each query on the CPU: ~0.4 s per search, ~2 GB of RAM, no GPU.
-   To use another API instead (e.g. vLLM on the GPU): `--embed-api URL`
-   (key: `--embed-key` or `SOUVENIR_API_KEY`).
+2.  Search: `make search` installs llama.cpp (CPU build) and the same model in
+    8 bits (1.8 GB, checksums verified). When photo vectors exist, the server
+    starts it as a child process (127.0.0.1 only, stopped with the server) and
+    encodes each query on the CPU: ~0.4 s per search, ~2 GB of RAM, no GPU.
+    To use another API instead (e.g. vLLM on the GPU): `--embed-api URL`
+    (key: `--embed-key` or `SOUVENIR_API_KEY`).
 
 The query is built exactly as vLLM builds it (chat template without the final
 "assistant" line, sent as token ids), so CPU and GPU vectors agree (measured
@@ -152,13 +185,20 @@ Your names and corrections are kept in `data/people.json`, each with its face
 vector, so they survive a new run of `find_faces.py`. Face vectors are
 biometric data: they stay on your machines like the rest.
 
-## Deleting photos
+## Work on photos
 
-With an admin password (`SOUVENIR_ADMIN_PASSWD`, `--admin-password`, or
-`tools/install_service.sh --admin-password`, which stores it in
-`~/.config/souvenir/env` next to the access password), the slideshow has a 🗑
-button and the `Suppr` key: the first time asks the admin password (then 30 min
-without asking again; 🔓 logs out). A deleted photo is not erased: it is moved
+In Slideshow, in Admin mode, it is possible to delete and rotate a photo.
+On the map, in Admin mode, you can change its GPS position.
+These features do not work without an admin password.
+
+Set an admin password with `SOUVENIR_ADMIN_PASSWD`, `--admin-password`, or
+`tools/install_service.sh --admin-password` (which stores it in
+`~/.config/souvenir/env` next to the access password). The first admin action
+asks for it, then not again for 30 min; 🔓 in the slideshow logs out.
+
+### Delete
+
+The slideshow has a 🗑 button and the `Suppr` key. A deleted photo is not erased: it is moved
 to `data/trash/` (same subfolders), with "Annuler" for a few seconds; Ctrl+Z (⌘Z)
 undoes the last deletion at any time, then the one before, and so on. Empty
 `data/trash/` yourself when sure (`rm -r data/trash`). Without an admin
@@ -176,10 +216,20 @@ it back is instant. After emptying the trash, clean up:
 from `cache/thumbs/` and `cache/face_crops/` what belongs to no photo of
 `data/photos/` nor `data/trash/`. Everything removed is remade when needed.
 
-## Moving photos on the map
+### Turning photos
 
-Also in admin mode: Ctrl+drag (⌘+drag) a photo's square on the map to put it
-where it was really taken (the admin password is asked the first time). The
+In the slideshow, ↻ or `r` turns the photo shown a quarter turn clockwise
+(`⇧R` anticlockwise); Ctrl+Z turns it back. Only the photo's
+EXIF Orientation changes (ExifTool), so it is lossless and instant; JPEG only,
+as browsers do not all apply it to other formats. The file's date changes on
+purpose: its preview is remade at once, and the next `make faces` and
+`tools/embed_photos.py` redo that photo (faces and meaning as now seen). Until then its face
+boxes may be misplaced.
+
+### Moving photos on the map
+
+Ctrl+drag (⌘+drag) a photo's square on the map to put it where it was really
+taken. The
 position is written into the photo's EXIF GPS by ExifTool (`sudo apt install
 libimage-exiftool-perl`); the photo file is modified, but it keeps its date and
 its image data. "Annuler" or Ctrl+Z writes back its previous GPS, or removes it
@@ -195,16 +245,17 @@ anything).
 
 ## Keyboard shortcuts
 
-| Key | Action |
-|---|---|
-| ← → | previous / next day (when "Dates" is unfolded) |
-| Page Up / Page Down | scroll the photo panel by one screen |
-| Home / End | first / last photo of the panel |
-| d | full-screen slideshow (diaporama) of the panel's photos |
-| f | in the slideshow: show the faces, to name people |
-| Suppr | in the slideshow: move the photo to `data/trash/` (admin password) |
-| Ctrl+Z | undo the last deletion or move on the map (again: the one before…) |
-| Ctrl+drag | on the map: move a photo (admin password) |
+| Key                 | Action                                                             |
+| ------------------- | ------------------------------------------------------------------ |
+| ← →                 | previous / next day (when "Dates" is unfolded)                     |
+| Page Up / Page Down | scroll the photo panel by one screen                               |
+| Home / End          | first / last photo of the panel                                    |
+| d                   | full-screen slideshow (diaporama) of the panel's photos            |
+| f                   | in the slideshow: show the faces, to name people                   |
+| Suppr               | in the slideshow: move the photo to `data/trash/` (admin password) |
+| r / ⇧R              | in the slideshow: turn the photo clockwise / anticlockwise (admin) |
+| Ctrl+Z              | undo the last deletion, move or turn (again: the one before…)      |
+| Ctrl+drag           | on the map: move a photo (admin password)                          |
 
 In the slideshow: ← → previous / next photo, Space starts or stops automatic
 playback (5 s per photo), Esc closes. Mouse wheel or pinch zooms in, then
@@ -246,8 +297,9 @@ Both have `--help`.
 
 ## Layout
 
-The project has four source files; everything else is data, downloaded map
-files or third-party libraries.
+The source is five Python files, the three files of `static/`, the `Makefile`
+and the tools; everything else is data, generated caches, downloaded map files
+or third-party libraries.
 
 ```
 souvenir/
@@ -255,22 +307,28 @@ souvenir/
 ├── photos.py          photo times, positions and previews
 ├── search.py          search photos by meaning (vectors, local llama.cpp)
 ├── people.py          names of the faces (matching, your answers)
-├── models/            the search model for llama.cpp (make search)
 ├── timezones.py       time zone of a position
+├── Makefile           install, run, service, faces, search, clean-cache
 ├── README.md          this file
+├── models/            search model for llama.cpp (make search), face models (make faces)
 ├── data/
 │   ├── gps/           the traces, one zip per day
-│   └── photos/        photos and videos (subfolders allowed)
+│   ├── photos/        photos and videos (subfolders allowed)
+│   ├── people.json    your names, aliases and corrections of faces
+│   └── trash/         deleted photos (empty it yourself)
 ├── static/            everything the browser loads
 │   ├── index.html     page structure
 │   ├── style.css      page look
 │   ├── app.js         map and all the logic
 │   ├── vendor/        JS libraries (downloaded)
 │   └── assets/        map fonts and icons (downloaded)
-├── cache/             photo index and previews (generated)
+├── cache/             generated, safe to delete: photo index (photos.json), previews
+│                      (thumbs/), search vectors (embeddings.*), faces (faces.*,
+│                      face_crops/), edit_photo.py backups (photo_backups/)
 ├── tiles/             the maps: world and France (downloaded)
 └── tools/
     ├── pmtiles        tool used to download the map
+    ├── install_service.sh  install the systemd user service (make service)
     ├── llama/         llama.cpp CPU build (make search)
     ├── edit_photo.py  set a photo's date / position
     ├── dedup.py       find and remove duplicate files
@@ -282,31 +340,38 @@ souvenir/
 
 ### Source code
 
-**`server.py`** (Python standard library only) does three things:
+**`server.py`** (Python standard library, plus the modules above) does four things:
 
 1. **API**: `/api/days` lists the days that have a trace or photos.
    `/api/track?day=20260928` opens that zip, reads the CSV (or the GPX if there
    is no CSV) and returns the points as JSON: time, lat, lon, altitude,
    accuracy, speed, source (gps/network) and battery. `/api/photos?days=…`
-   returns the photos of those days with their position, computed by the
-   server (`photos.locate`) and stored in the photo index.
-2. **Map tiles**: `/api/maps` lists the maps in `tiles/`, and each
+   returns the photos of those days (`?all=1`: every day; `&bbox=…`: only those
+   in an area) with their position, computed by the server (`photos.locate`)
+   and stored in the photo index. `/api/search`, `/api/people…` and `/api/faces`
+   serve the search and the faces.
+2. **Admin**: `/api/admin/login`, then `/api/photos/delete`, `restore`,
+   `rotate` and `place` (GPS), each refused without the admin session cookie.
+3. **Map tiles**: `/api/maps` lists the maps in `tiles/`, and each
    `tiles/NAME.pmtiles` is served in pieces. The browser asks for
    byte ranges (HTTP `Range` requests), so only the part of the map on screen is
    read from disk.
-3. **Everything else**: serves the files in `static/` and adds a security header
+4. **Everything else**: serves the files in `static/` and adds a security header
    to every response that forbids the browser from contacting any other site.
    That header is what guarantees nothing goes out. It listens on
    `0.0.0.0:8080` by default, so devices on the local network can reach it
    (`--host 127.0.0.1` for this computer only).
 
-**`static/index.html`**: the page layout. The side panel holds the calendar,
-the filters (accuracy, network positions, time range), the colour choice
-(Vitesse / Heure / Jour) with its legend, the stop-size legend and the list of
-displayed days. The map fills the rest.
+**`static/index.html`**: the page layout. The side panel holds the search box,
+the Personnes, the Dates (calendar, Semaine, month and year), the filters (GPS,
+Photo, ici, accuracy, network positions, time range), the colour choice
+(Heure / Jour / Vitesse) with its legend, the stop-size legend and the list of
+displayed days. Next to it, the photo panel; the map fills the rest; the
+slideshow covers everything when open.
 
 **`static/style.css`**: the look. Light and dark themes follow the system; on a
-phone the panel moves below the map.
+phone, one panel at a time, chosen with the tabs 🔍 (search and settings),
+📷 (photos) and 🌍 (map).
 
 **`static/app.js`**: all the logic.
 
@@ -328,6 +393,12 @@ phone the panel moves below the map.
 **`data/gps/`**: one GPSLogger zip per day. Each zip holds the same trace in three
 formats (CSV, GPX, KML); only the CSV is read, as it has the most detail
 (accuracy, battery).
+
+**`data/photos/`**: your photos and videos; the site only changes them in
+admin mode (turning, moving: metadata only, with ExifTool).
+
+**`data/people.json`**: the names you gave to faces, their aliases and your
+refusals, each with its face vector. **`data/trash/`**: deleted photos.
 
 ### Downloaded files (do not edit)
 
