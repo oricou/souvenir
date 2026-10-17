@@ -63,7 +63,8 @@ body {
 #photo-resizer:hover::after, #photo-resizer.dragging::after { background: #fff; opacity: 1; }
 body.resizing { cursor: col-resize; user-select: none; }
 #photos header { margin-bottom: 12px; display: flex; align-items: baseline; gap: 10px; }
-#photos header #viewer-open { margin-left: auto; padding: 0 8px; font-size: 16px; line-height: 1.6; }
+#photos header #viewer-open, #photos header #photos-download { padding: 0 8px; font-size: 16px; line-height: 1.6; }
+#photos header #viewer-open { margin-left: auto; }
 
 /* Full-screen viewer */
 #viewer {

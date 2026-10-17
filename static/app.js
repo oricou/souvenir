@@ -1471,6 +1471,30 @@ function wakeViewer() {
 }
 
 $('viewer-open').onclick = openViewer;
+
+/* ⬇: the panel's whole list (as the slideshow, not only the photos shown) in one zip,
+   named after what is shown. The server makes it while sending it (/export/TICKET). */
+function exportTitle() {
+  const here = showHere() ? ' ici' : '';
+  if (state.search) return `recherche ${state.search.q}${here}`;
+  if (state.person) return state.person.name + here;
+  const days = [...state.selected].sort();
+  return (!days.length ? 'toutes dates' : days.length === 1 ? days[0] : `${days[0]}-${days[days.length - 1]}`) + here;
+}
+const fmtBytes = (b) => b >= 1e9 ? `${(b / 1e9).toFixed(1)} Go` : `${Math.max(1, Math.round(b / 1e6))} Mo`;
+$('photos-download').onclick = async () => {
+  const list = shownPhotoList();
+  if (!list.length) return;
+  const { ok, data } = await postJSON('api/export', { names: list.map((p) => p.name), title: exportTitle() });
+  if (!ok) return alert(`Impossible : ${data.error || ''}`);
+  if (!confirm(`Télécharger ${data.count} photo${plural(data.count)} (${fmtBytes(data.bytes)}) dans un fichier zip ?`)) return;
+  const a = document.createElement('a'); // a plain link: the browser shows the download
+  a.href = `export/${data.ticket}`;
+  a.download = '';
+  document.body.append(a);
+  a.click();
+  a.remove();
+};
 $('viewer').querySelector('.v-close').onclick = closeViewer;
 $('viewer').querySelector('.v-prev').onclick = (e) => { e.stopPropagation(); step(-1); };
 $('viewer').querySelector('.v-next').onclick = (e) => { e.stopPropagation(); step(1); };

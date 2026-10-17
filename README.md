@@ -106,6 +106,10 @@ have them all. Its title says how many are shown out of the list: "ici · 20 /
 Folding the "Dates" title means all dates: every photo is listed
 (not the traces, far too many); with "ici", all the photos ever taken in the
 visible area.
+⬇ next to ⛶ downloads the whole list (all its photos, as the slideshow) in one
+zip, named after the search, person or days shown; its size is shown first.
+The photos are stored as they are, with their subfolders; the zip is made
+while it downloads, without any temporary file on the server.
 Previews are made once into `cache/thumbs/` (needs Pillow; ffmpeg for videos).
 Photo times and sizes are indexed in `cache/photos.json`, so a restart does not
 re-read thousands of files; the folders are re-scanned whenever a file is added,

@@ -35,7 +35,7 @@ import zipfile
 from datetime import datetime
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import photos
 import people
@@ -200,6 +200,9 @@ class Handler(SimpleHTTPRequestHandler):
     admin_lock = threading.Lock()
     ADMIN_IDLE = 30 * 60   # an admin session ends after 30 min without admin action
     search = None       # search.Search: photos by meaning
+    exports = {}        # ticket -> (expiry, file name, [photo names]): a zip to download
+    export_lock = threading.Lock()
+    EXPORT_TTL = 15 * 60
     people = None       # people.People: names of the faces
 
     def __init__(self, *a, **kw):
@@ -306,6 +309,9 @@ class Handler(SimpleHTTPRequestHandler):
             info = self.photo_index.photos_named(list(found))
             result = sorted((info[n] for n in found if n in info), key=lambda p: p["t"])
             return self.send_json({"name": name, "total": len(result), "photos": self.with_people(result)})
+        m = re.fullmatch(r"/export/([\w-]+)", url.path)
+        if m:
+            return self.send_export(m.group(1))
         if url.path == "/face":
             return self.send_face(parse_qs(url.query))
         m = PHOTO_RE.match(url.path)
@@ -327,6 +333,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/people/aliases":
             return self.post_aliases()
+        if path == "/api/export":
+            return self.post_export()
         if path == "/api/people/rename":
             return self.post_rename()
         if path.startswith("/api/admin/") or path in ("/api/photos/delete", "/api/photos/restore",
@@ -349,6 +357,63 @@ class Handler(SimpleHTTPRequestHandler):
         except (ValueError, KeyError, TypeError) as e:
             return self.send_json_status(HTTPStatus.BAD_REQUEST, {"error": str(e)})
         return self.send_json({"ok": True, "name": name, "faces": self.people.faces_of(photo)})
+
+    # ---------- export: the photos of the panel as one zip ----------
+
+    def post_export(self):
+        """{names: [...], title}: remember which photos to zip; returns {ticket, count,
+        bytes}. The page then downloads /export/TICKET (a plain link: the CSP forbids
+        forms, and the browser shows the download's progress itself)."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 5_000_000:
+                raise ValueError("body size")
+            body = json.loads(self.rfile.read(length))
+            names = [n for n in dict.fromkeys(map(str, body["names"])) if self.photo_index.get(n)]
+            if not names:
+                raise ValueError("no photo to export")
+            title = " ".join(re.sub(r"[^\w .,'-]+", " ", str(body.get("title", ""))).split())[:60] or "photos"
+        except (ValueError, KeyError, TypeError) as e:
+            return self.send_json_status(HTTPStatus.BAD_REQUEST, {"error": str(e).strip("'\"")})
+        size = 0
+        for n in names:
+            try:
+                size += os.path.getsize(os.path.join(self.photo_dir, n))
+            except OSError:
+                pass
+        ticket = secrets.token_urlsafe(16)
+        with self.export_lock:
+            now = time.time()
+            for t in [t for t, e in self.exports.items() if e[0] < now]:
+                del self.exports[t]
+            self.exports[ticket] = (now + self.EXPORT_TTL, f"souvenir {title}.zip", names)
+        return self.send_json({"ticket": ticket, "count": len(names), "bytes": size})
+
+    def send_export(self, ticket):
+        """The zip of an export, written while it is sent (no temporary file): photos
+        stored as they are (already compressed), with their subfolders."""
+        with self.export_lock:
+            entry = self.exports.get(ticket)
+        if not entry or entry[0] < time.time():
+            return self.send_error(HTTPStatus.NOT_FOUND, "export expired: ask it again")
+        _, filename, names = entry
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/zip")
+        ascii_name = filename.encode("ascii", "replace").decode().replace("?", "_").replace('"', "")
+        self.send_header("Content-Disposition",
+                         f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            # The connection is not seekable: zipfile then writes each size after its file.
+            with zipfile.ZipFile(self.wfile, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
+                for n in names:
+                    try:
+                        z.write(os.path.join(self.photo_dir, n), arcname=n)
+                    except OSError:
+                        continue  # deleted meanwhile
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # download cancelled
 
     def post_rename(self):
         """{name, to, merge}: correct a person's name; 409 {merge: other} if `to` is
