@@ -330,7 +330,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/people/rename":
             return self.post_rename()
         if path.startswith("/api/admin/") or path in ("/api/photos/delete", "/api/photos/restore",
-                                                      "/api/photos/place"):
+                                                      "/api/photos/place", "/api/photos/rotate"):
             return self.post_admin(path)
         if path not in ("/api/people/name", "/api/people/refuse"):
             return self.send_error(HTTPStatus.NOT_FOUND)
@@ -401,7 +401,8 @@ class Handler(SimpleHTTPRequestHandler):
     def post_admin(self, path):
         """/api/admin/login {password}, /api/admin/logout, and for an admin:
         /api/photos/delete {name} (moved to the trash), /api/photos/restore {name, trash},
-        /api/photos/place {name, lat, lon} (GPS written into the photo; lat null: removed)."""
+        /api/photos/place {name, lat, lon} (GPS written into the photo; lat null: removed),
+        /api/photos/rotate {name, quarters} (1: a quarter turn clockwise, -1: anticlockwise)."""
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
             if length > 10_000:
@@ -431,6 +432,18 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json_status(HTTPStatus.FORBIDDEN, {"error": "admin login needed", "login": True})
         name = str(body.get("name", ""))
         try:
+            if path == "/api/photos/rotate":
+                meta = self.photo_index.get(name)
+                if not meta:
+                    raise ValueError("unknown photo")
+                if os.path.splitext(name)[1].lower() not in (".jpg", ".jpeg"):
+                    raise ValueError("only JPEG photos can be turned")
+                quarters = body.get("quarters")
+                if quarters not in (1, -1):
+                    raise ValueError("quarters: 1 or -1")
+                photos.rotate(os.path.join(self.photo_dir, name), quarters)
+                self.photo_index.reread(name)
+                return self.send_json({"ok": True, "photo": self.photo_index.photos_named([name]).get(name)})
             if path == "/api/photos/place":
                 meta = self.photo_index.get(name)
                 if not meta:
@@ -641,8 +654,8 @@ def main():
                    help="password asked from other devices (this computer is never asked); "
                         "default: $SOUVENIR_PASSWORD, else none")
     p.add_argument("--admin-password",
-                   help="password to delete photos (moved to DATA/trash); "
-                        "default: $SOUVENIR_ADMIN_PASSWD, else no deleting")
+                   help="password to delete (to DATA/trash), turn and move photos; "
+                        "default: $SOUVENIR_ADMIN_PASSWD, else the site changes no photo")
     p.add_argument("--embed-api",
                    help="OpenAI-compatible API of the embedding model used for search "
                         "(e.g. vLLM on a GPU); default: llama.cpp on this CPU (make search)")

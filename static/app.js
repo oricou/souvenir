@@ -355,7 +355,10 @@ function square(size, color) {
 }
 
 // Names may contain "/" (subfolders): keep them as path separators.
-const photoUrl = (name, thumb) => `${thumb ? 'thumbs' : 'photos'}/${name.split('/').map(encodeURIComponent).join('/')}`;
+// A photo turned (admin) gets a new version in its URL: the browser fetches it again.
+const photoVersions = new globalThis.Map(); // name -> number of changes in this page
+const photoUrl = (name, thumb) => `${thumb ? 'thumbs' : 'photos'}/${name.split('/').map(encodeURIComponent).join('/')}` +
+  (photoVersions.has(name) ? `?v=${photoVersions.get(name)}` : '');
 
 function photoInfo(p) {
   return `<img class="pop-img" src="${photoUrl(p.name, true)}" alt=""><br>` +
@@ -980,6 +983,7 @@ function showInViewer() {
   hideAsk();
   drawFaces();
   $('viewer').querySelector('.v-delete').hidden = !state.admin.enabled;
+  $('viewer').querySelector('.v-rotate').hidden = !state.admin.enabled || !canRotate(p);
   $('viewer').querySelector('.v-lock').hidden = !state.admin.logged;
 }
 
@@ -990,10 +994,10 @@ function photoCopies(name) {
   const lists = [...state.photos.values(), state.allPhotos, state.search?.photos, state.person?.photos, state.here.photos, viewer.list];
   return [...new Set(lists.flatMap((l) => (l || []).filter((p) => p.name === name)))];
 }
-/** Put the page's copies of a photo at pos ({lat, lon, exact, off}) and redraw it. */
+/** Update the page's copies of a photo (position {lat, lon, exact, off}, size {w, h}) and redraw it. */
 function placeCopies(name, pos) {
   for (const p of photoCopies(name)) {
-    for (const k of ['lat', 'lon', 'exact', 'off']) if (k in pos) p[k] = pos[k];
+    for (const k of ['lat', 'lon', 'exact', 'off', 'w', 'h']) if (k in pos) p[k] = pos[k];
   }
   updatePhotos();
   if (viewerOpen()) showInViewer();
@@ -1082,6 +1086,7 @@ function askAdmin(next) {
     $('viewer').querySelector('.v-lock').hidden = true;
   };
   $('viewer').querySelector('.v-delete').onclick = (e) => { e.stopPropagation(); deleteShown(); };
+  $('viewer').querySelector('.v-rotate').onclick = (e) => { e.stopPropagation(); rotateShown(1); };
 }
 
 /** Remove a photo from every list the page holds (it is no longer on the server). */
@@ -1120,13 +1125,39 @@ async function deleteShown() {
   showInViewer();
 }
 
-/* Deletions and moves (on the map) made since the page was opened, last one last:
+/* Admin: r (or ↻) turns the photo shown a quarter turn clockwise, ⇧R anticlockwise, by
+   changing its EXIF Orientation (lossless). JPEG only: browsers do not all apply it to
+   other formats. Its faces are found again by the next tools/find_faces.py. */
+const canRotate = (p) => p.kind !== 'video' && /\.jpe?g$/i.test(p.name);
+function rotateShown(quarters) {
+  const p = viewer.list[viewer.i];
+  if (p && state.admin.enabled && canRotate(p)) rotatePhoto(p.name, quarters);
+}
+async function rotatePhoto(name, quarters, { undoing = false } = {}) {
+  if (!state.admin.logged) return askAdmin(() => rotatePhoto(name, quarters, { undoing }));
+  const { ok, data } = await postJSON('api/photos/rotate', { name, quarters });
+  if (!ok) {
+    if (data.login) { state.admin.logged = false; return askAdmin(() => rotatePhoto(name, quarters, { undoing })); }
+    return alert(`Impossible : ${data.error || ''}`);
+  }
+  photoVersions.set(name, (photoVersions.get(name) || 0) + 1); // its photo and preview changed
+  viewer.ready.delete(name);
+  state.photoKey = null; // the panel shows it again, turned
+  placeCopies(name, data.photo || {}); // new width / height; redraws the panel and the slideshow
+  if (!undoing) deletions.push({ turned: true, name, quarters });
+}
+
+/* Deletions, moves (on the map) and turns made since the page was opened, last one last:
    "Annuler" undoes its own, Ctrl+Z (⌘Z) undoes the last one, again the one before, etc. */
 const deletions = [];
 async function undoDelete(entry = deletions[deletions.length - 1]) {
   if (!entry) return showToast('Rien à annuler.');
   if (!state.admin.logged) return askAdmin(() => undoDelete(entry)); // the admin session expired
   if (entry.moved) return undoMove(entry);
+  if (entry.turned) { // turn it back
+    deletions.splice(deletions.indexOf(entry), 1);
+    return rotatePhoto(entry.name, -entry.quarters, { undoing: true });
+  }
   const { p, trash, index, list } = entry;
   const back = await postJSON('api/photos/restore', { name: p.name, trash });
   if (!back.ok) {
@@ -1602,6 +1633,9 @@ document.addEventListener('keydown', (e) => {
   if (!viewerOpen() || e.target.tagName === 'INPUT') return;
   if (e.key === 'f') { toggleFaces(); wakeViewer(); return; }
   if (e.key === 'Delete') { deleteShown(); wakeViewer(); return; }
+  if ((e.key === 'r' || e.key === 'R') && !e.ctrlKey && !e.metaKey && !e.altKey) { // not Ctrl+R (reload)
+    rotateShown(e.key === 'R' ? -1 : 1); wakeViewer(); return;
+  }
   if (e.key.toLowerCase() === 'z' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
     e.preventDefault(); undoDelete(); wakeViewer(); return;
   }

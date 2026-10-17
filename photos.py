@@ -431,6 +431,34 @@ def write_gps(path, lat, lon):
     os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))  # -P keeps whole seconds only
 
 
+# EXIF Orientation after a quarter turn clockwise of the photo as shown (checked with
+# Pillow's exif_transpose on every value; 2, 4, 5, 7 are the mirrored ones).
+CLOCKWISE = {1: 6, 6: 3, 3: 8, 8: 1, 2: 7, 7: 4, 4: 5, 5: 2}
+
+
+def rotate(path, quarters):
+    """Turn a photo by quarter turns (1: clockwise, -1: anticlockwise) by changing its
+    EXIF Orientation with ExifTool: lossless, the pixels are not touched. Unlike
+    write_gps(), the file's date changes: its preview is remade, and the next
+    tools/find_faces.py and tools/embed_photos.py redo it (faces and meaning as seen)."""
+    exiftool = shutil.which("exiftool")
+    if not exiftool:
+        raise RuntimeError("ExifTool is missing: sudo apt install libimage-exiftool-perl")
+    r = subprocess.run([exiftool, "-s3", "-n", "-Orientation", path], capture_output=True, text=True, timeout=60)
+    try:
+        orientation = int(r.stdout.strip() or 1)
+    except ValueError:
+        orientation = 1
+    if orientation not in CLOCKWISE:
+        orientation = 1
+    for _ in range(quarters % 4):  # -1: three turns clockwise
+        orientation = CLOCKWISE[orientation]
+    r = subprocess.run([exiftool, "-overwrite_original", "-m", "-q", f"-Orientation#={orientation}", path],
+                       capture_output=True, text=True, timeout=60)
+    if r.returncode:
+        raise RuntimeError(r.stderr.strip() or "exiftool failed")
+
+
 def thumbnail(photo_dir, name, cache_dir):
     """Path of a JPEG preview of photo_dir/name (made once), or None if impossible."""
     src = os.path.join(photo_dir, name)
