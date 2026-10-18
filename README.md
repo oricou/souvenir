@@ -173,7 +173,9 @@ recognised, green = named by you. Tap a face to name it ("Laurence"), confirm
 it, or say "Pas Laurence". From a few named faces, every face close enough
 (similarity ≥ 0.5) is recognised; refusals keep look-alikes away. The
 "Personnes" section lists the names; tap one to see all their photos, and
-correct mistakes from there. A misspelt name ("Laurance"): in that person's
+correct mistakes from there. Ctrl+click (⌘+click) adds a person to the
+selection, or removes them: the panel then shows the photos of any of them
+(each photo once, by date). A misspelt name ("Laurance"): in that person's
 view, click the name above the photos, type it right, Enter. A name already
 given to someone else merges the two people (after asking): their faces,
 refusals and other names go together.

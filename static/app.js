@@ -601,7 +601,7 @@ function photoFeatures() {
 function renderPhotos() {
   const list = shownPhotoList();
   const here = showHere(), found = state.search, person = state.person;
-  const key = (found ? `search:${found.q}:` : '') + (person ? `person:${person.name}:` : '') + (here ? 'ici:' : '') +
+  const key = (found ? `search:${found.q}:` : '') + (person ? `person:${person.label}:` : '') + (here ? 'ici:' : '') +
     list.map((p) => p.name + (p.people || []).join()).join('|');
   if (key === state.photoKey) return;
   state.photoKey = key;
@@ -610,7 +610,8 @@ function renderPhotos() {
   // "ici · 20 / 76": photos shown in the panel / in the list (which the slideshow goes through).
   const count = $('photo-count');
   count.textContent = found ? `recherche${here ? ' ici' : ''} · ` : person ? '' : here ? 'ici · ' : '';
-  if (person && !found) { // the person's name: click to correct it
+  if (person && !found && !person.name) count.append(`${person.label}${here ? ' ici' : ''} · `); // several people
+  if (person && !found && person.name) { // the person's name: click to correct it
     const who = document.createElement('button');
     who.type = 'button';
     who.className = 'person-name';
@@ -627,7 +628,7 @@ function renderPhotos() {
   $('photo-note').hidden = list.length > 0;
   $('photo-note').textContent = found
     ? (found.error ? `Recherche indisponible : ${found.error}` : `Aucune photo trouvée ${daysLabel()}${here ? ' dans cette zone de la carte' : ''}.`)
-    : person ? `Aucune photo de ${person.name} ${daysLabel()}${here ? ' dans cette zone de la carte' : ''} (${person.total} en tout).`
+    : person ? `Aucune photo de ${person.label} ${daysLabel()}${here ? ' dans cette zone de la carte' : ''} (${person.total} en tout).`
     : !showPhotos() ? 'Photos masquées (case « Photo » dans les filtres).'
     : here ? 'Aucune photo de ces jours dans cette zone de la carte.'
     : state.selected.length ? 'Aucune photo pour les jours choisis.'
@@ -641,7 +642,7 @@ function renderPhotos() {
   const manyDays = found || person || state.selected.length !== 1;
   // A new list (search, person, days, "ici") or a longer one (another place on the map…)
   // starts again at its first PHOTO_PAGE photos; a shorter one (a photo deleted) does not.
-  const context = [found?.q, person?.name, here, datesFolded(), state.selected.join()].join('|');
+  const context = [found?.q, person?.label, here, datesFolded(), state.selected.join()].join('|');
   if (context !== panel.context || list.length > panel.list.length) Object.assign(panel, { context, count: PHOTO_PAGE });
   Object.assign(panel, { list, manyDays });
   appendPhotos(0, Math.min(list.length, panel.count));
@@ -1170,7 +1171,7 @@ async function undoDelete(entry = deletions[deletions.length - 1]) {
   state.allPhotos = null;
   await load();
   if (state.search) await runSearch();
-  if (state.person) await showPerson(state.person.name, { keepView: true });
+  if (state.person) await showPerson(state.person.names, { keepView: true });
   render();
   loadPeople();
   if (viewerOpen() && list === viewer.list) { // back in this slideshow, shown
@@ -1272,7 +1273,7 @@ async function answerFace(kind, name) {
   p.people = [...new Set(data.faces.filter((x) => x.name).map((x) => x.name))].sort();
   if (viewer.list[viewer.i] === p) showInViewer();
   await loadPeople();
-  if (state.person) await showPerson(state.person.name, { keepView: true });
+  if (state.person) await showPerson(state.person.names, { keepView: true });
 }
 {
   const form = $('viewer').querySelector('.v-ask');
@@ -1305,7 +1306,7 @@ function renderPeople() {
   for (const person of people) {
     for (const n of [person.name, ...(person.aliases || [])]) $('people-names').append(new Option(n));
     const b = document.createElement('button');
-    b.className = (state.person?.name === person.name ? 'on' : '') + (person.photos ? '' : ' none');
+    b.className = (state.person?.names.includes(person.name) ? 'on' : '') + (person.photos ? '' : ' none');
     if (person.cover) {
       const img = document.createElement('img');
       img.alt = '';
@@ -1318,8 +1319,16 @@ function renderPeople() {
     b.append(person.name, n);
     b.title = `Les photos de ${person.name}` + (person.aliases?.length ? ` (aussi : ${person.aliases.join(', ')})` : '') +
       (state.selected.length ? ` — ${person.photos} photo${plural(person.photos)} sur ces jours, ${person.total} en tout`
-                             : ` — ${person.total} photo${plural(person.total)}`);
-    b.onclick = () => (state.person?.name === person.name ? leavePerson() : showPerson(person.name));
+                             : ` — ${person.total} photo${plural(person.total)}`) +
+      ' (Ctrl+clic : ajouter / retirer de la sélection)';
+    b.onclick = (e) => {
+      const chosen = state.person?.names || [];
+      if (e.ctrlKey || e.metaKey) { // several people: the photos of any of them
+        const next = chosen.includes(person.name) ? chosen.filter((n) => n !== person.name) : [...chosen, person.name];
+        return next.length ? showPerson(next) : leavePerson();
+      }
+      return chosen.length === 1 && chosen[0] === person.name ? leavePerson() : showPerson(person.name);
+    };
     box.append(b);
   }
   if (available && !people.length) {
@@ -1329,10 +1338,24 @@ function renderPeople() {
     box.className = 'people';
   }
 }
-async function showPerson(name, { keepView = false } = {}) {
-  const r = await fetch('api/people/photos?name=' + encodeURIComponent(name));
-  if (!r.ok) return;
-  state.person = await r.json();
+/** Show the photos of one person, or of several (a name or a list of names): every
+    photo where any of them is, once, by date. */
+async function showPerson(names, { keepView = false } = {}) {
+  const found = (await Promise.all([].concat(names).map(async (name) => {
+    const r = await fetch('api/people/photos?name=' + encodeURIComponent(name));
+    return r.ok ? r.json() : null;
+  }))).filter((f) => f && state.people.people.some((p) => p.name === f.name)); // gone meanwhile (renamed…): dropped
+  if (!found.length) return leavePerson();
+  const union = new globalThis.Map();
+  for (const f of found) for (const p of f.photos) union.set(p.name, p);
+  const chosen = [...new Set(found.map((f) => f.name))];
+  state.person = {
+    names: chosen,
+    name: chosen.length === 1 ? chosen[0] : null, // one person: their name can be corrected, aliases set
+    label: chosen.join(', '),
+    photos: [...union.values()].sort((a, b) => a.t - b.t),
+  };
+  state.person.total = state.person.photos.length;
   if (state.search) { state.search = null; $('search').value = ''; $('search-note').hidden = true; }
   renderPeople();
   updatePhotos();
@@ -1348,7 +1371,7 @@ async function showPerson(name, { keepView = false } = {}) {
    used to name faces and in the search. */
 let aliasFor = null; // whose aliases the form shows
 function showAliasForm() {
-  const form = $('alias-form'), person = state.person;
+  const form = $('alias-form'), person = state.person?.name ? state.person : null; // one person only
   form.hidden = !person;
   if (!person || aliasFor === person.name) return; // keep what is being typed
   aliasFor = person.name;
@@ -1477,7 +1500,7 @@ $('viewer-open').onclick = openViewer;
 function exportTitle() {
   const here = showHere() ? ' ici' : '';
   if (state.search) return `recherche ${state.search.q}${here}`;
-  if (state.person) return state.person.name + here;
+  if (state.person) return state.person.label + here;
   const days = [...state.selected].sort();
   return (!days.length ? 'toutes dates' : days.length === 1 ? days[0] : `${days[0]}-${days[days.length - 1]}`) + here;
 }
