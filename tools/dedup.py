@@ -14,10 +14,17 @@ rather than "x (1).jpg" or "copie de x.jpg"), then the oldest, then the first
 alphabetically. Symbolic links are ignored, and hard links to the same file are
 not counted as copies. Empty files are skipped unless --include-empty.
 
+--remove-from DIR (repeatable; relative to the current folder or to the scanned
+directory) limits the removal to copies inside DIR: a group's kept file is
+taken outside it when there is one, and files outside it are never removed.
+If all copies of a group are inside DIR, one of them is kept. Groups with no
+copy inside DIR are left alone and not listed.
+
 Examples:
     tools/dedup.py data/photos -r                 # list only
     tools/dedup.py data/photos -r --delete        # remove the copies
     tools/dedup.py data/gps --trash /tmp/doublons # move them aside
+    tools/dedup.py data/photos -r --remove-from data/photos/import   # only copies there
 """
 
 import argparse
@@ -97,6 +104,12 @@ def keeper_order(path):
     return len(os.path.basename(path)), os.path.getmtime(path), path
 
 
+def inside(path, folders):
+    """Whether path is in one of folders (real absolute paths)."""
+    real = os.path.realpath(path)
+    return any(real == f or real.startswith(f + os.sep) for f in folders)
+
+
 def human(n):
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024 or unit == "GB":
@@ -115,18 +128,35 @@ def main():
     action.add_argument("--trash", metavar="DIR", help="move the extra copies into DIR")
     p.add_argument("--include-empty", action="store_true",
                    help="also treat empty files as copies of each other")
+    p.add_argument("--remove-from", metavar="DIR", action="append", default=[],
+                   help="only remove copies inside DIR (repeatable)")
     args = p.parse_args()
     if not os.path.isdir(args.directory):
         sys.exit(f"not a directory: {args.directory}")
+    removable = []
+    for d in args.remove_from:
+        if not os.path.isdir(d) and os.path.isdir(os.path.join(args.directory, d)):
+            d = os.path.join(args.directory, d)
+        if not os.path.isdir(d):
+            sys.exit(f"not a directory: {d}")
+        removable.append(os.path.realpath(d))
     if args.trash:
         os.makedirs(args.trash, exist_ok=True)
 
-    groups = sorted((sorted(g, key=keeper_order) for g in
-                     find_duplicates(args.directory, args.recursive, args.include_empty)),
-                    key=lambda g: g[0])
+    def order(path):  # with --remove-from, keep a file outside those folders first
+        return (bool(removable) and inside(path, removable),) + keeper_order(path)
+
+    groups = []
+    for g in find_duplicates(args.directory, args.recursive, args.include_empty):
+        keep, *rest = sorted(g, key=order)
+        extra = [q for q in rest if not removable or inside(q, removable)]
+        if extra:
+            groups.append(([keep] + [q for q in rest if q not in extra], extra))
+    groups.sort(key=lambda g: g[0][0])
     copies = saved = 0
-    for keep, *extra in groups:
-        print(f"keep    {keep}")
+    for kept, extra in groups:
+        for path in kept:
+            print(f"keep    {path}")
         for path in extra:
             size = os.path.getsize(path)
             if args.delete:
