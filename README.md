@@ -422,3 +422,18 @@ refusals, each with its face vector. **`data/trash/`**: deleted photos.
   map. Only needed to update the map (see [Update the map](#update-the-map)).
 
 Map data © OpenStreetMap contributors (ODbL).
+
+## License
+
+Copyright © 2026 Olivier Ricou.
+
+Souvenir is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License, version 3 or (at your option)
+any later version; see [`LICENSE`](LICENSE). In short: if you run a modified
+version as a service for others, you must offer them its source code.
+
+Third-party files keep their own licenses: MapLibre GL (BSD-3,
+`static/vendor/LICENSE-maplibre.txt`), pmtiles.js and basemaps.js (BSD-3,
+`static/vendor/LICENSE-pmtiles.txt`, `LICENSE-basemaps.txt`), the Noto Sans
+fonts (SIL OFL 1.1, `static/assets/fonts/OFL.txt`) and the map icons (MIT,
+`static/assets/sprites/LICENSE.txt`).
