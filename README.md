@@ -10,6 +10,8 @@ traces, the viewed area nor any photo can leak.
 
 GPS traces or photos can be used alone.
 
+![Souvenir: a day's photos next to its GPS trace on the map](docs/souvenir.png)
+
 ## Requirements
 
 - Python 3
@@ -316,6 +318,7 @@ souvenir/
 ├── timezones.py       time zone of a position
 ├── Makefile           install, run, service, faces, search, clean-cache
 ├── README.md          this file
+├── docs/              screenshot for this README
 ├── models/            search model for llama.cpp (make search), face models (make faces)
 ├── data/
 │   ├── gps/           the traces, one zip per day
